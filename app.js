@@ -2839,21 +2839,30 @@ function renderSheet() {
 
   // Дедлайн
   const dateRow = el('div', 'picker-row');
+  // Поле кладём прозрачным слоем прямо поверх кнопки: Safari на iOS
+  // открывает нативный пикер только по реальному касанию самого input,
+  // программный .click() по скрытому полю там не срабатывает
+  const dateWrap = el('div', 'picker-wrap');
   const dateBtn = el('button', 'picker' + (d.deadline ? ' active' : ''));
   dateBtn.innerHTML = `${icon(ICONS.calendar, 15)}<span>${d.deadline ? fmtFull(d.deadline) : 'Дедлайн'}</span>`;
+  dateBtn.setAttribute('tabindex', '-1');
   const dateInput = el('input');
   dateInput.type = 'datetime-local';
-  dateInput.className = 'hidden-input';
+  dateInput.className = 'picker-input';
+  dateInput.setAttribute('aria-label', 'Дедлайн');
+  // Значение проставляем заранее — касание сразу открывает пикер на нужной дате
+  dateInput.value = toLocalInput(new Date(d.deadline || Date.now()));
   dateInput.addEventListener('change', () => {
     if (dateInput.value) { d.deadline = new Date(dateInput.value).getTime(); renderSheet(); }
   });
-  dateBtn.addEventListener('click', () => {
-    dateInput.value = toLocalInput(new Date(d.deadline || Date.now()));
+  // На десктопе клик по полю сам пикер не открывает — нужен showPicker
+  dateInput.addEventListener('click', () => {
     if (typeof dateInput.showPicker === 'function') {
-      try { dateInput.showPicker(); } catch (e) { dateInput.click(); }
-    } else dateInput.click();
+      try { dateInput.showPicker(); } catch (e) { /* iOS откроет пикер сам */ }
+    }
   });
-  dateRow.append(dateBtn, dateInput);
+  dateWrap.append(dateBtn, dateInput);
+  dateRow.append(dateWrap);
 
   if (d.deadline) {
     const clear = el('button', 'icon-btn bordered');

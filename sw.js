@@ -1,4 +1,4 @@
-const CACHE = 'nix-v7';
+const CACHE = 'nix-v8';
 const ASSETS = [
   './',
   './index.html',
