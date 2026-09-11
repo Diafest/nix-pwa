@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Nix — планировщик задач</title>
+
+<!-- Собрано под iPhone: на Android есть нативное приложение -->
+
+<meta name="description" content="Задачи с дедлайнами, приоритетами, повторами, подзадачами, фокус-таймером и статистикой">
+<meta name="theme-color" content="#0A0C10">
+<meta name="color-scheme" content="dark light">
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+
+<!-- iOS учитывает манифест лишь частично, поэтому теги дублируются -->
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nix">
+<!-- Safari не умеет запускать PWA в альбомной ориентации иначе как по манифесту -->
+<meta name="format-detection" content="telephone=no">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="splash">
+  <svg class="splash-mark" viewBox="0 0 256 256" aria-label="Nix">
+    <g class="row">
+      <circle cx="26" cy="46" r="18" fill="#3CE6B8"/>
+      <rect x="62" y="37" width="150" height="18" rx="9" fill="#3CE6B8"/>
+    </g>
+    <g class="row">
+      <circle cx="26" cy="128" r="18" fill="#E63C6B"/>
+      <rect x="62" y="119" width="112" height="18" rx="9" fill="#E63C6B"/>
+    </g>
+    <g class="row">
+      <circle cx="26" cy="210" r="15" fill="none" stroke="#5B6478" stroke-width="9"/>
+      <rect x="62" y="201" width="84" height="18" rx="9" fill="#5B6478"/>
+    </g>
+  </svg>
+</div>
+
+<main class="app" id="app"></main>
+
+<button class="fab" id="fab" aria-label="Добавить задачу">
+  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2.2" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </svg>
+</button>
+
+<nav class="tabs" id="tabs" aria-label="Разделы"></nav>
+
+<div class="scrim hidden" id="scrim"></div>
+
+<div class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="grabber"></div>
+  <div class="sheet-inner" id="sheet-inner"></div>
+</div>
+
+<div class="toast" id="toast">
+  <span id="toast-text"></span>
+  <button id="toast-action" class="hidden"></button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
