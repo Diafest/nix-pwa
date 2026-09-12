@@ -438,10 +438,10 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .period-title { text-align: center; }
 .period-nav h2 { font-size: 1.15rem; font-weight: 600; margin: 0; }
 
-.weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; }
+.weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; }
 .weekdays span { font-size: 0.66rem; color: var(--text-muted); }
 
-.month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-top: 6px; }
+.month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-top: 6px; }
 .day-cell {
   aspect-ratio: 1; border-radius: 10px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
@@ -470,7 +470,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .stats-section { margin-top: 26px; }
 .stats-section:first-child { margin-top: 0; }
 .stats-section .group-label { margin-top: 0; }
-.stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.stat-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin-bottom: 10px; }
 .stat-row:last-child { margin-bottom: 0; }
 .stat-head { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--text-secondary); }
 .stat-value { font-size: 1.6rem; font-weight: 600; margin: 4px 0 0; }
@@ -484,8 +484,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .ring-label { fill: var(--text); font-size: 15px; font-weight: 600; }
 .ring-caption { font-size: 0.66rem; color: var(--text-muted); margin: 8px 0 0; text-align: center; }
 
-.heatmap { display: grid; grid-template-columns: repeat(13, 1fr); gap: 3px; }
-.heat-col { display: grid; grid-template-rows: repeat(7, 1fr); gap: 3px; }
+.heatmap { display: grid; grid-template-columns: repeat(13, minmax(0, 1fr)); gap: 3px; }
+.heat-col { display: grid; grid-template-rows: repeat(7, minmax(0, 1fr)); gap: 3px; }
 /* Ячейка визуально ~24px (формат сетки 13×7 не позволяет её увеличить),
    но тач-зона расширена прозрачным псевдоэлементом до ~40px — тот же
    приём, что и в .color-pick, только через ::before, так как сама
@@ -939,7 +939,7 @@ input, textarea, .text-input {
 /* ---------- Сетка папок и экран проекта (п.8, п.9) ---------- */
 
 .project-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px;
   margin-top: 10px;
 }
 .project-card {
@@ -957,6 +957,7 @@ input, textarea, .text-input {
 .project-card .project-name {
   margin: 10px 0 0; font-size: 0.86rem; font-weight: 500;
   overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
 }
 .project-progress {
   display: flex; align-items: center; gap: 8px;
@@ -1048,7 +1049,7 @@ input, textarea, .text-input {
 .habit-data-group .stat-row { margin-top: 16px; margin-bottom: 0; }
 .habit-month { margin-top: 20px; }
 .habit-month-head, .habit-month-grid {
-  display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
+  display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px;
 }
 .habit-month-head span {
   text-align: center; font-size: 0.64rem; color: var(--text-muted); padding-bottom: 4px;
@@ -1110,7 +1111,7 @@ input, textarea, .text-input {
 }
 .week-title { font-size: 0.95rem; font-weight: 600; }
 
-.week-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding-bottom: 8px; }
+.week-strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; padding-bottom: 8px; }
 .week-day {
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   padding: 6px 0; border-radius: 10px;
