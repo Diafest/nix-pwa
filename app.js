@@ -7,15 +7,43 @@ const PRIORITIES = [
   { id: 'LOW', label: 'Низкий', weight: 2, color: '#5b6478', glow: false }
 ];
 
-const CATEGORIES = [
+/**
+ * Категории по умолчанию (п.1). Это больше не фиксированный список, а сид
+ * при первом запуске: дальше категории живут в state.categories и их можно
+ * создавать, переименовывать, переставлять и удалять.
+ *
+ * Идентификаторы намеренно остались строковыми ('WORK', а не число), в
+ * отличие от Android, где категория стала строкой таблицы с числовым id.
+ * Причина практическая: в localStorage у существующих задач уже лежит
+ * category: 'WORK', и сохранение прежних ключей избавляет от миграции
+ * данных на устройстве. Переименование меняет label, но не id — поэтому
+ * связи задач не рвутся.
+ *
+ * 'OTHER' защищена от удаления: это приёмник, куда переезжают задачи
+ * из удаляемых категорий.
+ */
+const DEFAULT_CATEGORIES = [
   { id: 'INBOX', label: 'Входящие', color: '#6fd3e8' },
   { id: 'WORK', label: 'Работа', color: '#7c8cff' },
   { id: 'PERSONAL', label: 'Личное', color: '#c77cff' },
   { id: 'STUDY', label: 'Учёба', color: '#efa927' },
   { id: 'HEALTH', label: 'Здоровье', color: '#5dcaa5' },
   { id: 'FINANCE', label: 'Финансы', color: '#3ce6b8' },
-  { id: 'OTHER', label: 'Другое', color: '#8b95a8' }
+  { id: 'OTHER', label: 'Другое', color: '#8b95a8', protected: true }
 ];
+
+const FALLBACK_CATEGORY = 'OTHER';
+
+/** Палитра для новых категорий без своего цвета. */
+const CATEGORY_PALETTE = DEFAULT_CATEGORIES.map((c) => c.color);
+
+/**
+ * Актуальный список категорий. Функция, а не константа: обращения к ней
+ * разбросаны по всему файлу и должны видеть изменения сразу после правки.
+ */
+function cats() {
+  return state.categories;
+}
 
 // Энергия — своя холодная палитра, чтобы не путалась с приоритетом
 const ENERGIES = [
@@ -30,7 +58,8 @@ const RECURRENCES = [
   { id: 'WEEKDAYS', label: 'По будням', short: 'Будни' },
   { id: 'WEEKDAYS_CUSTOM', label: 'По выбранным дням', short: 'Свои дни' },
   { id: 'WEEKLY', label: 'Каждую неделю', short: 'Еженедельно' },
-  { id: 'MONTHLY', label: 'Каждый месяц', short: 'Ежемесячно' }
+  { id: 'MONTHLY', label: 'Каждый месяц', short: 'Ежемесячно' },
+  { id: 'YEARLY', label: 'Каждый год', short: 'Ежегодно' }
 ];
 
 const BOARD_GROUPS = [
@@ -94,7 +123,7 @@ const boardKey = {
 function categoriesOf(task) {
   const extra = Array.isArray(task.categories) ? task.categories : [];
   const all = [task.category].concat(extra.filter((c) => c !== task.category));
-  return all.filter((c) => CATEGORIES.some((x) => x.id === c));
+  return all.filter((c) => cats().some((x) => x.id === c));
 }
 
 function boardPositionOf(task, key) {
@@ -153,6 +182,16 @@ const KEY_SESSIONS = 'nix.sessions.v1';
 const KEY_PROJECTS = 'nix.projects.v1';
 const KEY_TEMPLATES = 'nix.templates.v1';
 const KEY_VIEWS = 'nix.views.v1';
+/* Настройки отображения на уровне списка (п.12). Отдельный ключ, а не поле
+   в сохранённых видах: настройка нужна на любой категории и любом проекте,
+   а не только там, где пользователь завёл вид. Ключ внутри — "SCOPE:id",
+   один в один с таблицей list_settings на Android. */
+const KEY_LIST_SETTINGS = 'nix.listSettings.v1';
+const KEY_CATEGORIES = 'nix.categories.v1';
+/* Привычки (п.13). Две сущности, как на Android: сама привычка и отметки
+   по дням. Отметки храним словарём dayStart -> count внутри привычки —
+   отдельная «таблица» в localStorage только усложнила бы чтение. */
+const KEY_HABITS = 'nix.habits.v1';
 
 const defaultSettings = {
   theme: 'DARK',
@@ -196,6 +235,15 @@ const state = {
   projects: readJson(KEY_PROJECTS, []),
   templates: readJson(KEY_TEMPLATES, []),
   views: readJson(KEY_VIEWS, []),
+  listSettings: readJson(KEY_LIST_SETTINGS, {}),
+  // Пустой список означает первый запуск — сидим дефолтами
+  habits: readJson(KEY_HABITS, []),
+  openedHabitId: null,
+  habitDraft: null,
+  categories: (() => {
+    const stored = readJson(KEY_CATEGORIES, null);
+    return Array.isArray(stored) && stored.length ? stored : DEFAULT_CATEGORIES.slice();
+  })(),
   settings: Object.assign({}, defaultSettings, readJson(KEY_SETTINGS, {})),
   tab: 'TASKS',
   filter: { type: 'ALL' },
@@ -211,6 +259,8 @@ const state = {
   calendarAnchor: Date.now(),
   selectedDay: null,
   heatmapMode: 'TASKS',
+  statsPeriod: 'WEEK',
+  projectStatsOpen: false,
   focus: null,
   dragId: null
 };
@@ -220,6 +270,411 @@ const saveSessions = () => writeJson(KEY_SESSIONS, state.sessions);
 const saveProjects = () => writeJson(KEY_PROJECTS, state.projects);
 const saveTemplates = () => writeJson(KEY_TEMPLATES, state.templates);
 const saveViews = () => writeJson(KEY_VIEWS, state.views);
+const saveListSettings = () => writeJson(KEY_LIST_SETTINGS, state.listSettings);
+const saveCategories = () => writeJson(KEY_CATEGORIES, state.categories);
+const saveHabits = () => writeJson(KEY_HABITS, state.habits);
+
+/* ------------------------------------------------- категории как сущность (п.1) */
+
+function addCategory(label) {
+  const name = String(label || '').trim();
+  if (!name) return null;
+  const category = {
+    id: makeId(),
+    label: name,
+    color: CATEGORY_PALETTE[state.categories.length % CATEGORY_PALETTE.length]
+  };
+  state.categories.push(category);
+  saveCategories();
+  return category;
+}
+
+function renameCategory(id, label) {
+  const name = String(label || '').trim();
+  const category = state.categories.find((c) => c.id === id);
+  // Переименование меняет только подпись: id остаётся прежним,
+  // поэтому связи задач не рвутся
+  if (!category || !name) return;
+  category.label = name;
+  saveCategories();
+}
+
+function moveCategory(id, delta) {
+  const index = state.categories.findIndex((c) => c.id === id);
+  const target = index + delta;
+  if (index < 0 || target < 0 || target >= state.categories.length) return;
+  const [item] = state.categories.splice(index, 1);
+  state.categories.splice(target, 0, item);
+  saveCategories();
+}
+
+/** Сколько задач переедет — показываем в подтверждении. */
+function tasksInCategory(id) {
+  return state.tasks.filter((t) => !t.deletedAt && categoriesOf(t).includes(id)).length;
+}
+
+/**
+ * Удаление категории. Задачи не теряются: и основная категория, и связи
+ * переезжают в «Другое». Порядок как на Android — сначала переносим, потом
+ * убираем саму категорию, иначе задачи на миг остались бы с висячей ссылкой.
+ */
+function deleteCategory(id) {
+  if (id === FALLBACK_CATEGORY) return;
+
+  state.tasks.forEach((task) => {
+    if (task.category === id) task.category = FALLBACK_CATEGORY;
+    if (Array.isArray(task.categories)) {
+      // distinct: задача могла состоять и в удаляемой, и в «Другое» —
+      // иначе после переноса получился бы дубль
+      task.categories = Array.from(new Set(
+        task.categories.map((c) => (c === id ? FALLBACK_CATEGORY : c))
+      ));
+    }
+  });
+
+  // Сохранённые виды и настройки списка, привязанные к удалённой категории,
+  // иначе остались бы указывать в пустоту
+  state.views = state.views.map((v) =>
+    v.filter && v.filter.type === 'CAT' && v.filter.category === id
+      ? Object.assign({}, v, { filter: { type: 'ALL' } })
+      : v);
+  delete state.listSettings['CATEGORY:' + id];
+
+  if (state.filter && state.filter.type === 'CAT' && state.filter.category === id) {
+    state.filter = { type: 'ALL' };
+  }
+
+  state.categories = state.categories.filter((c) => c.id !== id);
+  saveCategories();
+  saveTasks();
+  saveViews();
+  saveListSettings();
+}
+
+/**
+ * Имя категории из файла импорта → id на этом устройстве.
+ *
+ * Порядок проверок важен. Сначала старые файлы, где категория лежала
+ * внутренним идентификатором ('WORK') — иначе такой файл завёл бы дубль
+ * категории с именем «WORK». Затем сопоставление по имени без учёта
+ * регистра. Если имя незнакомое — заводим новую категорию, а не сваливаем
+ * во «Входящие»: иначе импорт молча слил бы разные категории в одну.
+ */
+function resolveCategoryByName(raw) {
+  const name = String(raw || '').trim();
+  if (!name) return 'INBOX';
+
+  if (state.categories.some((c) => c.id === name)) return name;
+
+  const byLabel = state.categories.find(
+    (c) => c.label.toLowerCase() === name.toLowerCase());
+  if (byLabel) return byLabel.id;
+
+  const created = addCategory(name);
+  return created ? created.id : FALLBACK_CATEGORY;
+}
+
+/* -------------------------------------------------- заметки и файлы (п.5) */
+
+/**
+ * Файлы в PWA хранятся как Blob в IndexedDB.
+ *
+ * localStorage не годится: он текстовый и ограничен примерно 5 МБ. В
+ * IndexedDB Safari обычно даёт сотни мегабайт, но это не гарантия — iOS
+ * может очистить данные сайта при нехватке места или если приложение долго
+ * не открывали. Обходить это внешним хранилищем сознательно не стали:
+ * PWA не может выйти за песочницу браузера без нативного приложения,
+ * которое мы не делаем.
+ *
+ * Метаданные (имя, размер) дублируются в задаче в localStorage — чтобы
+ * список вложений рисовался без асинхронного чтения на каждый рендер, а
+ * при потере Blob было видно, что именно пропало.
+ */
+const FILES_DB = 'nix-files';
+const FILES_STORE = 'blobs';
+let filesDbPromise = null;
+
+function openFilesDb() {
+  if (filesDbPromise) return filesDbPromise;
+  filesDbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(FILES_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(FILES_STORE)) db.createObjectStore(FILES_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return filesDbPromise;
+}
+
+function filesTx(mode) {
+  return openFilesDb().then((db) => db.transaction(FILES_STORE, mode).objectStore(FILES_STORE));
+}
+
+function putBlob(key, blob) {
+  return filesTx('readwrite').then((store) => new Promise((resolve, reject) => {
+    const req = store.put(blob, key);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
+function getBlob(key) {
+  return filesTx('readonly').then((store) => new Promise((resolve, reject) => {
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
+function deleteBlob(key) {
+  return filesTx('readwrite').then((store) => new Promise((resolve) => {
+    const req = store.delete(key);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => resolve(false);
+  }));
+}
+
+/** Прикладывает файл к задаче: Blob в IndexedDB, метаданные — в задачу. */
+async function attachFile(taskId, file) {
+  const task = findTask(taskId);
+  if (!task || !file) return;
+
+  const key = taskId + ':' + makeId();
+  try {
+    await putBlob(key, file);
+  } catch (e) {
+    // Квота исчерпана или хранилище недоступно — молчать нельзя,
+    // иначе пользователь решит, что файл приложен
+    showToast('Не удалось сохранить файл: не хватает места');
+    return;
+  }
+
+  if (!Array.isArray(task.attachments)) task.attachments = [];
+  task.attachments.push({
+    key,
+    name: file.name || 'Файл',
+    size: file.size || 0,
+    type: file.type || ''
+  });
+  saveTasks();
+  render();
+}
+
+async function removeAttachment(taskId, key) {
+  const task = findTask(taskId);
+  if (!task) return;
+  await deleteBlob(key);
+  task.attachments = (task.attachments || []).filter((a) => a.key !== key);
+  saveTasks();
+  render();
+}
+
+/**
+ * Открывает вложение. Blob мог не пережить очистку хранилища на iOS —
+ * тогда честно говорим об этом, а не открываем пустую вкладку.
+ */
+async function openAttachment(att) {
+  let blob = null;
+  try { blob = await getBlob(att.key); } catch (e) { blob = null; }
+  if (!blob) {
+    showToast('Файл недоступен — хранилище было очищено');
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  // Ссылку освобождаем с задержкой: немедленный revoke отменил бы открытие
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' Б';
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' КБ';
+  return (bytes / 1024 / 1024).toFixed(1) + ' МБ';
+}
+
+/* ------------------------------------------------------- привычки (п.13) */
+
+const HABIT_EMOJI = ['✅','💧','🏃','📚','🧘','💊','🛏️','🥗','🚭','💰','🎸','🧹','✍️','🦷','☀️','🌙'];
+const HABIT_COLORS = ['#3ce6b8','#7c8cff','#c77cff','#efa927','#5dcaa5','#e63c6b','#56b7e8','#8b95a8'];
+
+/**
+ * Ожидается ли привычка в этот день. Пустая маска — каждый день.
+ *
+ * Маска использует getDay() (Вс = 0), как и повторы задач в PWA. На Android
+ * та же маска строится на Calendar.DAY_OF_WEEK (Вс = 1), поэтому численно
+ * маски платформ не совпадают — внутри каждой платформы они согласованы,
+ * а между платформами привычки пока не переносятся.
+ */
+function habitScheduledOn(habit, dayStart) {
+  if (weekdayMaskEmpty(habit.weekdayMask)) return true;
+  return hasWeekday(habit.weekdayMask, new Date(dayStart).getDay());
+}
+
+const habitTarget = (habit) => Math.max(1, habit.dailyTarget || 1);
+const habitCount = (habit, dayStart) => (habit.entries || {})[dayStart] || 0;
+const habitDoneOn = (habit, dayStart) => habitCount(habit, dayStart) >= habitTarget(habit);
+
+/**
+ * Серия «без пропусков». Считаются только выбранные дни недели: невыбранный
+ * день пропускается, не разрывая серию. Сегодняшний день особый — он ещё не
+ * закончился, поэтому невыполненное сегодня серию не обнуляет, иначе она
+ * сбрасывалась бы каждое утро.
+ */
+function habitStreak(habit, now = Date.now()) {
+  const today = startOfDay(now);
+  const created = startOfDay(habit.createdAt || now);
+  let streak = 0;
+  let day = today;
+  let isToday = true;
+  let guard = 0;
+
+  while (day >= created && guard < 1830) {
+    guard++;
+    if (!habitScheduledOn(habit, day)) { day -= DAY; isToday = false; continue; }
+
+    if (habitDoneOn(habit, day)) {
+      streak++;
+    } else if (isToday) {
+      isToday = false; day -= DAY; continue;
+    } else {
+      break;
+    }
+    isToday = false;
+    day -= DAY;
+  }
+  return streak;
+}
+
+/**
+ * Процент считается от дней, когда привычка ожидалась, а не от всех прошедших:
+ * иначе привычка «три раза в неделю» не смогла бы дать больше 43%.
+ * Незавершённый сегодняшний день в знаменатель не входит.
+ */
+function habitMetrics(habit, now = Date.now()) {
+  const today = startOfDay(now);
+  const created = startOfDay(habit.createdAt || now);
+  let expected = 0;
+  let completed = 0;
+  let day = created;
+  let guard = 0;
+
+  while (day <= today && guard < 3660) {
+    guard++;
+    if (habitScheduledOn(habit, day)) {
+      const done = habitDoneOn(habit, day);
+      if (done) completed++;
+      if (done || day !== today) expected++;
+    }
+    day += DAY;
+  }
+
+  const total = Object.values(habit.entries || {}).reduce((a, b) => a + b, 0);
+  return {
+    streak: habitStreak(habit, now),
+    rate: expected ? completed / expected : 0,
+    total
+  };
+}
+
+function saveHabit(draft) {
+  const name = String(draft.name || '').trim();
+  if (!name) return null;
+
+  if (draft.id) {
+    const existing = state.habits.find((h) => h.id === draft.id);
+    if (existing) Object.assign(existing, draft, { name });
+  } else {
+    state.habits.push({
+      id: makeId(),
+      name,
+      emoji: draft.emoji || HABIT_EMOJI[0],
+      color: draft.color || HABIT_COLORS[0],
+      dailyTarget: draft.dailyTarget || 1,
+      weekdayMask: draft.weekdayMask || 0,
+      status: 'ACTIVE',
+      createdAt: Date.now(),
+      entries: {}
+    });
+  }
+  saveHabits();
+  return true;
+}
+
+/**
+ * Плюс/минус отметка. Нулевое значение удаляем из словаря, а не храним как 0:
+ * иначе «нет отметки» и «отмечено ноль раз» стали бы двумя разными
+ * состояниями с одинаковым смыслом.
+ */
+function adjustHabit(id, delta, dayStart) {
+  const habit = state.habits.find((h) => h.id === id);
+  if (!habit) return;
+  if (!habit.entries) habit.entries = {};
+
+  const max = habitTarget(habit);
+  const next = Math.min(max, Math.max(0, habitCount(habit, dayStart) + delta));
+  if (next === 0) delete habit.entries[dayStart];
+  else habit.entries[dayStart] = next;
+  saveHabits();
+}
+
+function setHabitStatus(id, status) {
+  const habit = state.habits.find((h) => h.id === id);
+  if (!habit) return;
+  habit.status = status;
+  saveHabits();
+}
+
+function deleteHabit(id) {
+  state.habits = state.habits.filter((h) => h.id !== id);
+  if (state.openedHabitId === id) state.openedHabitId = null;
+  saveHabits();
+}
+
+/** Область текущего списка для настроек (п.12). null — списку не к чему привязать настройку. */
+function currentListScope() {
+  // Тип фильтра категории в PWA называется 'CAT', а не 'CATEGORY' —
+  // ключ при этом формируем как на Android, чтобы области совпадали
+  if (state.filter && state.filter.type === 'CAT' && state.filter.category) {
+    return 'CATEGORY:' + state.filter.category;
+  }
+  if (state.filter && state.filter.type === 'PROJECT' && state.filter.projectId) {
+    return 'PROJECT:' + state.filter.projectId;
+  }
+  return null;
+}
+
+function showsDaysLeft(scope) {
+  return !!(scope && state.listSettings[scope] && state.listSettings[scope].showDaysLeft);
+}
+
+function toggleDaysLeft(scope) {
+  if (!scope) return;
+  const current = showsDaysLeft(scope);
+  state.listSettings[scope] = { showDaysLeft: !current };
+  saveListSettings();
+  render();
+}
+
+/** «осталось N дней» — склонения как в DateUtils.daysLeftLabel на Android. */
+function daysLeftLabel(deadline, now = Date.now()) {
+  const days = Math.round((startOfDay(deadline) - startOfDay(now)) / DAY);
+  const plural = (n, one, few, many) => {
+    if (n % 100 >= 11 && n % 100 <= 14) return many;
+    const r = n % 10;
+    if (r === 1) return one;
+    if (r >= 2 && r <= 4) return few;
+    return many;
+  };
+  if (days < 0) {
+    const over = -days;
+    return `просрочено на ${over} ${plural(over, 'день', 'дня', 'дней')}`;
+  }
+  if (days === 0) return 'сегодня';
+  if (days === 1) return 'остался 1 день';
+  return `осталось ${days} ${plural(days, 'день', 'дня', 'дней')}`;
+}
 const saveSettings = () => writeJson(KEY_SETTINGS, state.settings);
 
 function makeId() {
@@ -296,6 +751,16 @@ function nextOccurrence(from, recurrence, now = Date.now(), weekdayMask = 0) {
       } while (!hasWeekday(weekdayMask, d.getDay()) && steps < 7);
     } else if (recurrence === 'WEEKLY') d.setDate(d.getDate() + 7);
     else if (recurrence === 'MONTHLY') d.setMonth(d.getMonth() + 1);
+    else if (recurrence === 'YEARLY') {
+      // setFullYear(+1) на 29 февраля даёт 1 марта — Date переполняет месяц.
+      // Android на Calendar.add(YEAR) сводит такую дату к 28 февраля,
+      // поэтому здесь выравниваем поведение вручную, чтобы обе платформы
+      // повторяли задачу в один и тот же день.
+      const day = d.getDate();
+      const month = d.getMonth();
+      d.setFullYear(d.getFullYear() + 1);
+      if (d.getDate() !== day || d.getMonth() !== month) d.setDate(0);
+    }
     else return null;
     guard += 1;
   } while (d.getTime() <= now && guard < 500);
@@ -431,6 +896,42 @@ function cleanText(original, phrase) {
 }
 
 /* ---------------------------------------------------------------- статистика */
+
+/** Периоды сводки (п.11) — совпадают с StatsPeriod на Android. */
+const STATS_PERIODS = [
+  { id: 'WEEK', label: 'Неделя', days: 7 },
+  { id: 'MONTH', label: 'Месяц', days: 30 },
+  { id: 'YEAR', label: 'Год', days: 365 }
+];
+
+/**
+ * Сводка за период. Диапазон закрытый по дням: «Неделя» — сегодня и шесть
+ * предыдущих, а не последние 168 часов, иначе утренняя задача попадала бы
+ * в счёт или нет в зависимости от времени открытия приложения.
+ *
+ * Среднее делим на длину периода, а не на активные дни: при одном
+ * продуктивном дне в месяце иначе получилось бы, будто работа шла ровно.
+ *
+ * [tasks] и [sessions] передаются явно — та же функция считает и общую
+ * статистику, и статистику проекта (п.10).
+ */
+function periodSummary(days, tasks, sessions) {
+  const todayStart = startOfDay(Date.now());
+  const from = todayStart - (days - 1) * DAY;
+
+  const inRange = tasks.filter((t) => t.isDone && t.completedAt && t.completedAt >= from);
+  const minutes = sessions
+    .filter((s) => s.startedAt >= from)
+    .reduce((sum, s) => sum + s.minutes, 0);
+  const activeDays = new Set(inRange.map((t) => startOfDay(t.completedAt))).size;
+
+  return {
+    completed: inRange.length,
+    focusMinutes: minutes,
+    activeDays,
+    averagePerDay: inRange.length / days
+  };
+}
 
 function calcStats() {
   const now = Date.now();
@@ -589,7 +1090,14 @@ const ICONS = {
   left: '<path d="M15 18l-6-6 6-6"/>',
   right: '<path d="M9 18l6-6-6-6"/>',
   restore: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
-  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>'
+  trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
+  menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
+  home: '<path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+  today: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><circle cx="12" cy="16" r="2"/>',
+  habit: '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
+  clip: '<path d="M21.4 11.05 12.25 20.2a5.5 5.5 0 0 1-7.78-7.78l9.2-9.2a3.67 3.67 0 0 1 5.18 5.18l-9.2 9.2a1.83 1.83 0 0 1-2.6-2.6l8.5-8.48"/>'
 };
 
 const VIEW_ICONS = {
@@ -644,6 +1152,9 @@ function visibleTasks() {
   } else if (f.type === 'INBOX') list = list.filter((t) => !t.isDone && categoriesOf(t).includes('INBOX'));
   else if (f.type === 'DONE') list = list.filter((t) => t.isDone);
   else if (f.type === 'CAT') list = list.filter((t) => !t.isDone && categoriesOf(t).includes(f.category));
+  // Экран внутри проекта (п.9). Выполненные не прячем: на экране проекта
+  // важен прогресс «сделано из всего», а не только остаток
+  else if (f.type === 'PROJECT') list = list.filter((t) => t.projectId === f.projectId);
 
   const inf = Number.MAX_SAFE_INTEGER;
   const auto = (a, b) => {
@@ -712,7 +1223,7 @@ function axisValues(axis) {
     list.push({ key: boardKey.PROJECT(null), label: 'Без проекта', color: 'var(--text-muted)' });
     return list;
   }
-  return CATEGORIES.map((c) => ({ key: boardKey.CATEGORY(c.id), label: c.label, color: c.color }));
+  return cats().map((c) => ({ key: boardKey.CATEGORY(c.id), label: c.label, color: c.color }));
 }
 
 /**
@@ -786,7 +1297,7 @@ function keysOf(task, groupBy) {
 /** Цвет проекта: свой, если задан, иначе из палитры по позиции. */
 function projectColor(project) {
   if (project.colorHex) return project.colorHex;
-  const palette = CATEGORIES.map((c) => c.color);
+  const palette = cats().map((c) => c.color);
   const index = Math.max(0, state.projects.findIndex((p) => p.id === project.id));
   return palette[index % palette.length];
 }
@@ -795,7 +1306,7 @@ function projectColor(project) {
 
 function renderTaskCard(task, groupLabelText, index, groupSize) {
   const prio = byId(PRIORITIES, task.priority);
-  const cat = byId(CATEGORIES, task.category);
+  const cat = byId(cats(), task.category);
   const energy = byId(ENERGIES, task.energy || 'MEDIUM');
   const rec = byId(RECURRENCES, task.recurrence || 'NONE');
   const subs = task.subtasks || [];
@@ -841,8 +1352,13 @@ function renderTaskCard(task, groupLabelText, index, groupSize) {
     // Тап по сроку откладывает задачу: свайпы заняты (выполнить и удалить),
     // долгое нажатие — фокус-таймер
     const tappable = task.isDone ? '' : ' tappable" data-act="snooze';
+    // Режим «срок до дедлайна» локален для списка (п.12)
+    const daysMode = showsDaysLeft(currentListScope());
+    const whenText = daysMode
+      ? daysLeftLabel(task.deadline)
+      : (overdue ? 'Просрочено · ' : '') + fmtTime(task.deadline);
     meta.innerHTML += `<span class="meta-item${overdue ? ' overdue' : ''}${tappable}">${icon(ICONS.clock)}` +
-      (overdue ? 'Просрочено · ' : '') + fmtTime(task.deadline) + '</span>';
+      escapeHtml(whenText) + '</span>';
   }
   if (rec.id !== 'NONE') {
     meta.innerHTML += `<span class="meta-item repeat">${icon(ICONS.repeat)}${escapeHtml(describeRecurrence(task))}</span>`;
@@ -852,17 +1368,34 @@ function renderTaskCard(task, groupLabelText, index, groupSize) {
   // Категорий может быть несколько — на карточке места хватает на все
   const tags = el('div', 'task-meta');
   tags.innerHTML = categoriesOf(task).map((id) => {
-    const c = byId(CATEGORIES, id);
+    const c = byId(cats(), id);
     return `<span class="cat-tag" style="--cat:${c.color}">${escapeHtml(c.label)}</span>`;
   }).join('') +
     `<span class="energy-tag tappable" data-act="energy">${icon(ICONS.bolt, 11)}${escapeHtml(energy.short)}</span>`;
+  body.appendChild(tags);
+
+  // Заметка и файлы видны прямо на карточке (п.5): спрятанные в форму,
+  // они бы просто забывались
+  if (task.note) {
+    body.appendChild(el('p', 'task-note', task.note));
+  }
+  if ((task.attachments || []).length) {
+    const att = el('div', 'task-attach');
+    att.innerHTML = icon(ICONS.clip, 12, 2) + '<span>' +
+      (task.attachments.length === 1
+        ? escapeHtml(task.attachments[0].name)
+        : task.attachments.length + ' файла') + '</span>';
+    body.appendChild(att);
+  }
+
+  // Прогресс чек-листа — отдельной строкой, не ещё одним чипом в общем ряду
   if (subs.length) {
     const pct = Math.round((doneSubs / subs.length) * 100);
-    tags.innerHTML += `<span class="subtask-progress">
-      <span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span>
-      ${doneSubs}/${subs.length}</span>`;
+    const prog = el('div', 'subtask-progress' + (doneSubs === subs.length ? ' complete' : ''));
+    prog.innerHTML = `<span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span>
+      <span>${doneSubs}/${subs.length}</span>`;
+    body.appendChild(prog);
   }
-  body.appendChild(tags);
   tap.appendChild(body);
   main.appendChild(tap);
 
@@ -933,7 +1466,7 @@ function renderTaskCard(task, groupLabelText, index, groupSize) {
  */
 function renderTaskTile(task, dragCtx) {
   const prio = byId(PRIORITIES, task.priority);
-  const cat = byId(CATEGORIES, task.category);
+  const cat = byId(cats(), task.category);
   const energy = byId(ENERGIES, task.energy || 'MEDIUM');
   const rec = byId(RECURRENCES, task.recurrence || 'NONE');
   const subs = task.subtasks || [];
@@ -941,7 +1474,9 @@ function renderTaskTile(task, dragCtx) {
   const overdue = !task.isDone && task.deadline && isOverdue(task.deadline);
   const glowColor = task.isDone ? null : (overdue ? '#e63c6b' : (prio.glow ? prio.color : null));
 
-  const cats = categoriesOf(task);
+  // Имя отличается от функции cats(): одноимённая локальная переменная
+  // попадала бы в TDZ и вызовы cats() выше падали бы с ReferenceError
+  const taskCats = categoriesOf(task);
   const tile = el('div', 'tile' + (task.isDone ? ' done' : ''));
   tile.dataset.id = task.id;
   tile.style.setProperty('--prio', task.isDone ? 'var(--text-muted)' : prio.color);
@@ -971,22 +1506,26 @@ function renderTaskTile(task, dragCtx) {
   }
 
   // На узкой плитке показываем основную, остальные сворачиваем в «+N»
-  const shown = cats.slice(0, cats.length > 2 ? 1 : 2);
-  const hidden = cats.length - shown.length;
+  const shown = taskCats.slice(0, taskCats.length > 2 ? 1 : 2);
+  const hidden = taskCats.length - shown.length;
   const tags = el('div', 'tile-meta');
   tags.innerHTML = shown.map((id) => {
-    const c = byId(CATEGORIES, id);
+    const c = byId(cats(), id);
     return `<span class="cat-tag" style="--cat:${c.color}">${escapeHtml(c.label)}</span>`;
   }).join('') +
     (hidden > 0 ? `<span class="cat-more">+${hidden}</span>` : '') +
     `<span class="energy-tag">${icon(ICONS.bolt, 11)}${escapeHtml(energy.short)}</span>`;
+  tap.appendChild(tags);
+
+  // Прогресс чек-листа — отдельной строкой, не ещё одним чипом в общем ряду.
+  // В плитке нет отдельного .task-body: всё содержимое лежит прямо в .tile-tap
   if (subs.length) {
     const pct = Math.round((doneSubs / subs.length) * 100);
-    tags.innerHTML += `<span class="subtask-progress">
-      <span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span>
-      ${doneSubs}/${subs.length}</span>`;
+    const prog = el('div', 'subtask-progress' + (doneSubs === subs.length ? ' complete' : ''));
+    prog.innerHTML = `<span class="progress-track"><span class="progress-fill" style="width:${pct}%"></span></span>
+      <span>${doneSubs}/${subs.length}</span>`;
+    tap.appendChild(prog);
   }
-  tap.appendChild(tags);
 
   tap.addEventListener('click', () => openSheet(task.id));
   attachLongPress(tap, () => openFocus(task.id));
@@ -1125,6 +1664,54 @@ function snoozeTask(taskId, days) {
   showToast(`Отложено · ${fmtDayMonth(shifted)}`);
 }
 
+/**
+ * Полный редактор даты и времени для «Другое время…».
+ * На iOS нет программного способа открыть пикер иначе, чем через настоящий
+ * input[type=datetime-local]: создаём его скрытым, показываем нативный
+ * пикер и убираем сразу после выбора.
+ */
+function pickExactDeadline(taskId) {
+  const task = findTask(taskId);
+  if (!task) return;
+
+  const input = document.createElement('input');
+  input.type = 'datetime-local';
+  input.className = 'picker-input';
+  input.style.position = 'fixed';
+  input.style.left = '50%';
+  input.style.top = '50%';
+  input.value = toLocalInput(new Date(task.deadline || Date.now()));
+  document.body.appendChild(input);
+
+  const cleanup = () => { if (input.parentNode) input.remove(); };
+
+  input.addEventListener('change', () => {
+    if (input.value) {
+      const picked = new Date(input.value).getTime();
+      if (!Number.isNaN(picked)) {
+        if (task.deadline && task.reminderAt) {
+          task.reminderAt = picked - (task.deadline - task.reminderAt);
+        }
+        task.deadline = picked;
+        state.notifiedIds.delete(task.id);
+        saveTasks();
+        render();
+        showToast(`Срок · ${fmtDayMonth(picked)}, ${fmtTime(picked)}`);
+      }
+    }
+    cleanup();
+  });
+  // Отмена пикера не шлёт change — подчищаем по уходу фокуса
+  input.addEventListener('blur', () => setTimeout(cleanup, 400));
+
+  input.focus();
+  if (typeof input.showPicker === 'function') {
+    try { input.showPicker(); } catch (_) { input.click(); }
+  } else {
+    input.click();
+  }
+}
+
 let snoozeMenuEl = null;
 
 function closeSnoozeMenu() {
@@ -1148,6 +1735,16 @@ function openSnoozeMenu(taskId, anchor) {
     });
     menu.appendChild(item);
   });
+
+  // Три пресета покрывают быстрый перенос, но точную дату с минутами
+  // раньше можно было выставить только в форме задачи
+  const exact = el('button', 'popup-item accent', 'Другое время…');
+  exact.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeSnoozeMenu();
+    pickExactDeadline(taskId);
+  });
+  menu.appendChild(exact);
 
   layer.addEventListener('click', closeSnoozeMenu);
   layer.appendChild(menu);
@@ -1193,6 +1790,536 @@ function deleteSavedView(id) {
   render();
 }
 
+/**
+ * Открыть экран проекта (п.9): тот же список задач, но отфильтрованный
+ * по projectId, плюс шапка с прогрессом. Отдельного экрана не заводим —
+ * это тот же таб задач с другим фильтром, поэтому работают и поиск,
+ * и режимы отображения, и настройка «осталось дней».
+ */
+function openProjectScreen(projectId) {
+  closeOverlay();
+  state.filter = { type: 'PROJECT', projectId };
+  state.query = '';
+  state.tab = 'TASKS';
+  render();
+}
+
+/** Шапка экрана проекта: название, цвет и прогресс-бар. */
+function renderProjectHeader() {
+  if (!state.filter || state.filter.type !== 'PROJECT') return null;
+  const project = state.projects.find((p) => p.id === state.filter.projectId);
+  if (!project) return null;
+
+  const own = state.tasks.filter((t) => !t.deletedAt && t.projectId === project.id);
+  const total = own.length;
+  const done = own.filter((t) => t.isDone).length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const accent = projectColor(project);
+
+  const box = el('div', 'project-header');
+  const top = el('div', 'project-header-top');
+
+  const back = el('button', 'icon-btn');
+  back.setAttribute('aria-label', 'Назад');
+  back.innerHTML = icon(ICONS.left, 20, 2);
+  back.addEventListener('click', () => {
+    state.filter = { type: 'ALL' };
+    render();
+  });
+
+  const dot = el('span', 'project-dot');
+  dot.style.background = accent;
+  const name = el('h2', 'project-title', project.name);
+
+  top.append(back, dot, name);
+  box.appendChild(top);
+
+  const prog = el('div', 'project-progress' + (total && done === total ? ' complete' : ''));
+  prog.innerHTML = `<span class="progress-track"><span class="progress-fill"
+    style="width:${pct}%;background:${accent}"></span></span><span>${done}/${total}</span>`;
+  box.appendChild(prog);
+
+  // Статистика проекта (п.10) — свёрнута по умолчанию: на экране проекта
+  // главное список задач, цифры нужны по запросу
+  const toggle = el('button', 'project-stats-toggle');
+  toggle.innerHTML = `<span>Статистика проекта</span>` +
+    icon(state.projectStatsOpen ? ICONS.up : ICONS.down, 17, 2);
+  toggle.addEventListener('click', () => {
+    state.projectStatsOpen = !state.projectStatsOpen;
+    render();
+  });
+  box.appendChild(toggle);
+
+  if (state.projectStatsOpen) {
+    // Сессии фильтруем по задачам проекта: иначе в фокус проекта попало бы
+    // время, потраченное на всё подряд. Сессии без taskId (задача удалена
+    // навсегда) не учитываем — принадлежность восстановить неоткуда
+    const ids = new Set(own.map((t) => t.id));
+    const projectSessions = state.sessions.filter((s) => s.taskId && ids.has(s.taskId));
+
+    const chosen = STATS_PERIODS.find((p) => p.id === state.statsPeriod) || STATS_PERIODS[0];
+    const summary = periodSummary(chosen.days, own, projectSessions);
+
+    const row = el('div', 'stat-row');
+    row.appendChild(metricCard(`Выполнено · ${chosen.label.toLowerCase()}`,
+      String(summary.completed), accent));
+    row.appendChild(metricCard('Фокус всего',
+      formatMinutes(projectSessions.reduce((sum, x) => sum + x.minutes, 0)),
+      'var(--text-secondary)'));
+    box.appendChild(row);
+
+    const row2 = el('div', 'stat-row');
+    row2.appendChild(metricCard('Активных дней',
+      `${summary.activeDays}/${chosen.days}`, 'var(--text-secondary)'));
+    row2.appendChild(metricCard('Задач всего', String(total), 'var(--text-secondary)'));
+    box.appendChild(row2);
+  }
+
+  return box;
+}
+
+/* ---------------------------------------------------------------- drawer (п.7) */
+
+function openDrawer() {
+  renderDrawer();
+  const scrim = $('#drawer-scrim');
+  const drawer = $('#drawer');
+  scrim.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    scrim.classList.add('open');
+    drawer.classList.add('open');
+  });
+}
+
+function closeDrawer() {
+  $('#drawer').classList.remove('open');
+  $('#drawer-scrim').classList.remove('open');
+  setTimeout(() => $('#drawer-scrim').classList.add('hidden'), 280);
+}
+
+function renderDrawer() {
+  const drawer = $('#drawer');
+  drawer.innerHTML = '';
+  drawer.appendChild(el('div', 'drawer-brand', 'Nix'));
+
+  const item = (iconPath, label, onClick) => {
+    const btn = el('button', 'drawer-item');
+    btn.innerHTML = icon(iconPath, 19, 1.9) + `<span>${escapeHtml(label)}</span>`;
+    btn.addEventListener('click', () => { closeDrawer(); onClick(); });
+    return btn;
+  };
+
+  drawer.appendChild(item(ICONS.home, 'Главный экран', () => {
+    state.filter = { type: 'ALL' };
+    state.tab = 'TASKS';
+    render();
+  }));
+  drawer.appendChild(item(ICONS.today, 'Сегодня', () => {
+    state.filter = { type: 'TODAY' };
+    state.tab = 'TASKS';
+    render();
+  }));
+  drawer.appendChild(item(ICONS.trash, 'Корзина', () => openOverlay('trash')));
+  drawer.appendChild(item(ICONS.settings, 'Настройки', () => openOverlay('settings')));
+
+  drawer.appendChild(el('div', 'drawer-divider'));
+
+  const section = el('div', 'drawer-section');
+  section.innerHTML = '<span>Проекты</span>';
+  const manage = el('button', 'link', 'Управление');
+  manage.addEventListener('click', () => { closeDrawer(); openOverlay('projects'); });
+  section.appendChild(manage);
+  drawer.appendChild(section);
+
+  if (!state.projects.length) {
+    const empty = el('p', 'muted-small', 'Проектов пока нет');
+    empty.style.padding = '4px 20px 8px';
+    drawer.appendChild(empty);
+  } else {
+    state.projects.forEach((project) => {
+      const own = state.tasks.filter((t) => !t.deletedAt && t.projectId === project.id);
+      const btn = el('button', 'drawer-project');
+      const dot = el('span', 'project-dot');
+      dot.style.background = projectColor(project);
+      const name = el('span', 'name', project.name);
+      btn.append(dot, name);
+      if (own.length) {
+        btn.appendChild(el('span', 'count', `${own.filter((t) => t.isDone).length}/${own.length}`));
+      }
+      btn.addEventListener('click', () => { closeDrawer(); openProjectScreen(project.id); });
+      drawer.appendChild(btn);
+    });
+  }
+
+  drawer.appendChild(el('div', 'drawer-divider'));
+  drawer.appendChild(item(ICONS.habit, 'Привычки', () => openOverlay('habits')));
+}
+
+/**
+ * Свайп от левого края открывает меню. Порог по краю узкий (24px), иначе
+ * жест конфликтовал бы со свайпами на карточках задач.
+ */
+function attachEdgeSwipe() {
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+
+  document.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    startX = t.clientX;
+    startY = t.clientY;
+    tracking = false;
+
+    if (t.clientX > 24) return;
+    if ($('#drawer').classList.contains('open')) return;
+    // Поверх открытой шторки меню выезжать не должно — свайп там
+    // принадлежит самой шторке
+    if (overlayKind) return;
+    // Плашка привычек и недельная сетка скроллятся вбок и начинаются
+    // близко к краю: жест внутри них принадлежит им, а не меню
+    if (t.target && t.target.closest &&
+        t.target.closest('.habit-strip, .week-scroll, .chip-row, .filter-row, .board')) {
+      return;
+    }
+
+    tracking = true;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!tracking || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    // Открываем только на явно горизонтальном жесте — вертикальный это скролл
+    if (t.clientX - startX > 55 && Math.abs(t.clientY - startY) < 45) {
+      tracking = false;
+      openDrawer();
+    }
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => { tracking = false; }, { passive: true });
+}
+
+/**
+ * Плашка привычек наверху экрана задач (п.13): ряд кружков с прогрессом
+ * за сегодня плюс кнопка «+». Достижений нет — от наград отказались.
+ */
+function renderHabitStrip() {
+  const active = state.habits.filter((h) => h.status === 'ACTIVE');
+  const row = el('div', 'habit-strip');
+  const today = startOfDay(Date.now());
+
+  active.forEach((habit) => {
+    const target = habitTarget(habit);
+    const count = habitCount(habit, today);
+    const done = count >= target;
+    // Незапланированная на сегодня привычка показывается приглушённо:
+    // убирать её совсем — значит каждый день менять состав ряда
+    const scheduled = habitScheduledOn(habit, today);
+
+    const cell = el('button', 'habit-cell' + (scheduled ? '' : ' off'));
+    cell.style.setProperty('--habit', habit.color || 'var(--accent)');
+
+    const ring = el('span', 'habit-ring' + (done ? ' done' : ''));
+    ring.innerHTML = done ? icon(ICONS.check, 20, 2.6) : escapeHtml(habit.emoji || '✅');
+    cell.appendChild(ring);
+    cell.appendChild(el('span', 'habit-name', habit.name));
+    if (target > 1) {
+      cell.appendChild(el('span', 'habit-count' + (done ? ' done' : ''), `${count}/${target}`));
+    }
+    cell.addEventListener('click', () => openHabitCard(habit.id));
+    row.appendChild(cell);
+  });
+
+  const add = el('button', 'habit-cell');
+  const addRing = el('span', 'habit-ring add');
+  addRing.innerHTML = icon(ICONS.plus, 18, 2.4);
+  add.appendChild(addRing);
+  add.appendChild(el('span', 'habit-name', 'Привычка'));
+  add.addEventListener('click', () => openHabitSheet(null));
+  row.appendChild(add);
+
+  return row;
+}
+
+/** Полная карточка привычки: счётчик ±, календарь месяца, метрики, статус. */
+function openHabitCard(id) {
+  state.openedHabitId = id;
+  openOverlay('habit');
+}
+
+function renderHabitCard() {
+  const sheet = $('#sheet-inner');
+  sheet.innerHTML = '';
+  const habit = state.habits.find((h) => h.id === state.openedHabitId);
+  if (!habit) { closeOverlay(); return; }
+
+  const today = startOfDay(Date.now());
+  const target = habitTarget(habit);
+  const accent = habit.color || 'var(--accent)';
+  const m = habitMetrics(habit);
+
+  const head = el('div', 'sheet-head');
+  const title = el('div', 'row-center');
+  title.innerHTML = `<span class="habit-big-emoji">${escapeHtml(habit.emoji || '✅')}</span>`;
+  const names = el('div');
+  names.appendChild(el('h2', null, habit.name));
+  names.appendChild(el('p', 'muted-small',
+    weekdayMaskEmpty(habit.weekdayMask) ? 'Каждый день' : describeWeekdays(habit.weekdayMask)));
+  title.appendChild(names);
+  head.appendChild(title);
+  sheet.appendChild(head);
+
+  // Счётчик ±: цель может быть больше одного раза в день
+  const counter = el('div', 'habit-counter');
+  const minus = el('button', 'habit-step');
+  minus.innerHTML = icon(ICONS.minus, 20, 2.4);
+  minus.disabled = habitCount(habit, today) === 0;
+  minus.addEventListener('click', () => {
+    adjustHabit(habit.id, -1, today); renderHabitCard(); render();
+  });
+
+  const dial = el('div', 'habit-dial' + (habitDoneOn(habit, today) ? ' done' : ''));
+  dial.style.setProperty('--habit', accent);
+  dial.innerHTML = `<span class="habit-dial-value">${habitCount(habit, today)}</span>
+    <span class="muted-small">из ${target}</span>`;
+
+  const plus = el('button', 'habit-step accent');
+  plus.innerHTML = icon(ICONS.plus, 20, 2.4);
+  plus.disabled = habitCount(habit, today) >= target;
+  plus.addEventListener('click', () => {
+    adjustHabit(habit.id, 1, today); renderHabitCard(); render();
+  });
+
+  counter.append(minus, dial, plus);
+  sheet.appendChild(counter);
+
+  sheet.appendChild(renderHabitMonth(habit, accent));
+
+  const metrics = el('div', 'stat-row');
+  metrics.appendChild(metricCard('Серия', String(m.streak), accent));
+  metrics.appendChild(metricCard('Выполнение', Math.round(m.rate * 100) + '%', 'var(--text-secondary)'));
+  metrics.appendChild(metricCard('Всего', String(m.total), 'var(--text-secondary)'));
+  sheet.appendChild(metrics);
+
+  const actions = el('div', 'habit-actions');
+  const paused = habit.status === 'PAUSED';
+  const pauseBtn = el('button', 'ghost-btn');
+  pauseBtn.innerHTML = icon(paused ? ICONS.play : ICONS.pause, 16, 2) +
+    `<span>${paused ? 'Возобновить' : 'Пауза'}</span>`;
+  pauseBtn.addEventListener('click', () => {
+    setHabitStatus(habit.id, paused ? 'ACTIVE' : 'PAUSED');
+    renderHabitCard(); render();
+  });
+
+  const doneBtn = el('button', 'ghost-btn');
+  doneBtn.innerHTML = icon(ICONS.check, 16, 2) + '<span>Завершить</span>';
+  doneBtn.addEventListener('click', () => {
+    setHabitStatus(habit.id, 'DONE'); closeOverlay(); render();
+  });
+
+  actions.append(pauseBtn, doneBtn);
+  sheet.appendChild(actions);
+
+  const editBtn = el('button', 'ghost-btn full');
+  editBtn.innerHTML = '<span>Изменить привычку</span>';
+  editBtn.addEventListener('click', () => openHabitSheet(habit.id));
+  sheet.appendChild(editBtn);
+
+  const del = el('button', 'danger-link', 'Удалить привычку');
+  del.addEventListener('click', () => {
+    if (confirm(`Удалить привычку «${habit.name}»? Отметки тоже удалятся.`)) {
+      deleteHabit(habit.id); closeOverlay(); render();
+    }
+  });
+  sheet.appendChild(del);
+}
+
+/**
+ * Календарь месяца с отметками. Дни, когда привычка не ожидается, показаны
+ * бледно — иначе непонятно, почему пропуск не разрывает серию.
+ */
+function renderHabitMonth(habit, accent) {
+  const box = el('div', 'habit-month');
+  const today = startOfDay(Date.now());
+  const now = new Date(today);
+
+  const head = el('div', 'habit-month-head');
+  WEEKDAYS.forEach((w) => head.appendChild(el('span', null, w.short)));
+  box.appendChild(head);
+
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  // Сетка начинается с понедельника, как в календаре задач
+  const lead = (first.getDay() + 6) % 7;
+  const grid = el('div', 'habit-month-grid');
+
+  for (let i = 0; i < lead; i++) grid.appendChild(el('span', 'habit-day empty'));
+
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  for (let d = 1; d <= days; d++) {
+    const dayStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), d).getTime());
+    const future = dayStart > today;
+    const scheduled = habitScheduledOn(habit, dayStart);
+    const done = habitDoneOn(habit, dayStart);
+
+    const cell = el('button', 'habit-day' +
+      (done ? ' done' : '') + (scheduled ? '' : ' off') + (future ? ' future' : ''));
+    cell.textContent = String(d);
+    if (done) cell.style.background = accent;
+    cell.disabled = future;
+    if (!future) {
+      // Тап по прошедшему дню переключает отметку целиком: добирать
+      // счётчик задним числом по единице неудобно
+      cell.addEventListener('click', () => {
+        adjustHabit(habit.id, done ? -habitTarget(habit) : habitTarget(habit), dayStart);
+        renderHabitCard();
+        render();
+      });
+    }
+    grid.appendChild(cell);
+  }
+
+  box.appendChild(grid);
+  return box;
+}
+
+/** Форма привычки. Дни недели переиспользуют тот же выбор, что и повторы задач. */
+function openHabitSheet(id) {
+  const existing = id ? state.habits.find((h) => h.id === id) : null;
+  state.habitDraft = existing
+    ? Object.assign({}, existing)
+    : { name: '', emoji: HABIT_EMOJI[0], color: HABIT_COLORS[0],
+        dailyTarget: 1, weekdayMask: 0 };
+  openOverlay('habitEdit');
+}
+
+function renderHabitSheet() {
+  const sheet = $('#sheet-inner');
+  sheet.innerHTML = '';
+  const d = state.habitDraft;
+  if (!d) { closeOverlay(); return; }
+
+  const head = el('div', 'sheet-head');
+  head.appendChild(el('h2', null, d.id ? 'Привычка' : 'Новая привычка'));
+  sheet.appendChild(head);
+
+  const input = el('input', 'text-input');
+  input.type = 'text';
+  input.placeholder = 'Например, «Зарядка»';
+  input.value = d.name || '';
+  input.addEventListener('input', () => { d.name = input.value; });
+  sheet.appendChild(input);
+
+  sheet.appendChild(el('p', 'group-label', 'Значок'));
+  const emojiRow = el('div', 'chip-wrap tight');
+  HABIT_EMOJI.forEach((e) => {
+    const b = el('button', 'emoji-pick' + (d.emoji === e ? ' active' : ''), e);
+    b.addEventListener('click', () => { d.emoji = e; renderHabitSheet(); });
+    emojiRow.appendChild(b);
+  });
+  sheet.appendChild(emojiRow);
+
+  sheet.appendChild(el('p', 'group-label', 'Цвет'));
+  const colorRow = el('div', 'chip-wrap tight');
+  HABIT_COLORS.forEach((c) => {
+    const b = el('button', 'color-pick' + (d.color === c ? ' active' : ''));
+    b.style.background = c;
+    b.setAttribute('aria-label', 'Цвет ' + c);
+    b.addEventListener('click', () => { d.color = c; renderHabitSheet(); });
+    colorRow.appendChild(b);
+  });
+  sheet.appendChild(colorRow);
+
+  sheet.appendChild(el('p', 'group-label', 'Сколько раз в день'));
+  const targetRow = el('div', 'chip-row');
+  [1, 2, 3, 4, 5].forEach((n) => {
+    targetRow.appendChild(chip(String(n), d.dailyTarget === n, () => {
+      d.dailyTarget = n; renderHabitSheet();
+    }));
+  });
+  sheet.appendChild(targetRow);
+
+  sheet.appendChild(el('p', 'group-label', 'Когда'));
+  const whenRow = el('div', 'chip-row');
+  const everyDay = weekdayMaskEmpty(d.weekdayMask);
+  whenRow.appendChild(chip('Каждый день', everyDay, () => {
+    d.weekdayMask = 0; renderHabitSheet();
+  }));
+  whenRow.appendChild(chip('Свои дни', !everyDay, () => {
+    // Пустая маска при выборе «свои дни» означала бы «каждый день» —
+    // подставляем будни, чтобы состояние было осмысленным
+    if (weekdayMaskEmpty(d.weekdayMask)) {
+      d.weekdayMask = [1, 2, 3, 4, 5].reduce((acc, x) => acc | (1 << x), 0);
+    }
+    renderHabitSheet();
+  }));
+  sheet.appendChild(whenRow);
+
+  if (!weekdayMaskEmpty(d.weekdayMask)) {
+    const daysRow = el('div', 'chip-row');
+    WEEKDAYS.forEach((w) => {
+      daysRow.appendChild(chip(w.short, hasWeekday(d.weekdayMask, w.day), () => {
+        d.weekdayMask = toggleWeekday(d.weekdayMask, w.day);
+        renderHabitSheet();
+      }));
+    });
+    sheet.appendChild(daysRow);
+  }
+
+  const save = el('button', 'primary-btn', d.id ? 'Сохранить' : 'Добавить');
+  save.addEventListener('click', () => {
+    if (!String(d.name || '').trim()) { input.focus(); return; }
+    saveHabit(d);
+    closeOverlay();
+    render();
+  });
+  sheet.appendChild(save);
+}
+
+/** Полный список привычек — пункт «Привычки» в боковом меню. */
+function renderHabitsList() {
+  const sheet = $('#sheet-inner');
+  sheet.innerHTML = '';
+  const today = startOfDay(Date.now());
+
+  const head = el('div', 'sheet-head');
+  const back = el('button', 'icon-btn');
+  back.setAttribute('aria-label', 'Назад');
+  back.innerHTML = icon(ICONS.left, 20, 2);
+  back.addEventListener('click', closeOverlay);
+  const titleBox = el('div', 'row-center');
+  titleBox.append(back, el('h2', null, 'Привычки'));
+  const add = el('button', 'icon-btn accent');
+  add.setAttribute('aria-label', 'Новая привычка');
+  add.innerHTML = icon(ICONS.plus, 20, 2.2);
+  add.addEventListener('click', () => openHabitSheet(null));
+  head.append(titleBox, add);
+  sheet.appendChild(head);
+
+  if (!state.habits.length) {
+    sheet.appendChild(el('p', 'muted-small',
+      'Привычек пока нет. Нажмите «+», чтобы добавить первую.'));
+    return;
+  }
+
+  state.habits.forEach((habit) => {
+    const m = habitMetrics(habit);
+    const row = el('button', 'project-row habit-row');
+    row.innerHTML = `<span class="habit-row-emoji">${escapeHtml(habit.emoji || '✅')}</span>`;
+
+    const box = el('div', 'habit-row-text');
+    box.appendChild(el('p', 'project-name', habit.name));
+    const sub = `серия ${m.streak} · ${Math.round(m.rate * 100)}%` +
+      (habit.status !== 'ACTIVE' ? ' · ' + (habit.status === 'PAUSED' ? 'на паузе' : 'завершена') : '');
+    box.appendChild(el('p', 'muted-small', sub));
+    row.appendChild(box);
+
+    row.appendChild(el('span', 'muted-small',
+      `${habitCount(habit, today)}/${habitTarget(habit)}`));
+    row.addEventListener('click', () => openHabitCard(habit.id));
+    sheet.appendChild(row);
+  });
+}
+
 /** Ряд вкладок под фильтрами. Долгое нажатие удаляет вкладку. */
 function renderSavedViews() {
   const row = el('div', 'chip-row views-row');
@@ -1211,6 +2338,14 @@ function renderSavedViews() {
     saveCurrentView(name);
     render();
   }));
+
+  // Переключатель «осталось дней» — только там, где у списка есть своя
+  // область (категория или проект). На «Все»/«Сегодня» привязать настройку
+  // не к чему, а глобальной она быть не должна (п.12)
+  const scope = currentListScope();
+  if (scope) {
+    row.appendChild(chip('Осталось дней', showsDaysLeft(scope), () => toggleDaysLeft(scope)));
+  }
 
   return row;
 }
@@ -1709,7 +2844,7 @@ function moveToColumn(taskId, targetCellKey, toIndex) {
   } else if (groupBy === 'PROJECT') {
     task.projectId = value === 'NONE' ? null : value;
   } else {
-    if (!CATEGORIES.some((c) => c.id === value)) return;
+    if (!cats().some((c) => c.id === value)) return;
     const rest = categoriesOf(task).filter((c) => c !== value);
     task.category = value;
     task.categories = rest;
@@ -2013,7 +3148,7 @@ function checkReminders() {
     // Пока идёт фокус по этой задаче, напоминание молчит
     if (state.focus && state.focus.active && state.focus.taskId === task.id) return;
 
-    const cat = byId(CATEGORIES, task.category);
+    const cat = byId(cats(), task.category);
     const body = task.deadline ? cat.label + ' · срок в ' + fmtTime(task.deadline) : cat.label;
 
     try {
@@ -2101,6 +3236,14 @@ function renderTasksTab(container) {
   const overdue = liveTasks().filter((t) =>
     !t.isDone && t.deadline && isOverdue(t.deadline)).length;
 
+  // Кнопка меню слева от заголовка: свайп от края есть, но нужна и явная
+  // точка входа — жест от края на iPhone спорит с системным «назад»
+  const menuBtn = el('button', 'icon-btn');
+  menuBtn.setAttribute('aria-label', 'Меню');
+  menuBtn.innerHTML = icon(ICONS.menu, 20, 1.9);
+  menuBtn.addEventListener('click', openDrawer);
+  header.appendChild(menuBtn);
+
   const titleBox = el('div');
   titleBox.appendChild(el('h1', null, 'Nix'));
   const subtitle = el('p', 'subtitle' + (overdue ? ' danger' : ''));
@@ -2159,12 +3302,22 @@ function renderTasksTab(container) {
     wrap.appendChild(input);
     container.appendChild(wrap);
     setTimeout(() => input.focus(), 50);
+  } else if (state.filter && state.filter.type === 'PROJECT') {
+    // На экране проекта ряд фильтров по категориям не нужен —
+    // вместо него шапка проекта с прогрессом (п.9)
+    const head = renderProjectHeader();
+    if (head) container.appendChild(head);
+    else state.filter = { type: 'ALL' };
   } else {
     container.appendChild(renderFilters());
   }
 
   const hint = renderIosHint();
   if (hint) container.appendChild(hint);
+
+  // Привычки идут над сохранёнными видами: это отметка «сделал»,
+  // а не ещё один способ отфильтровать задачи
+  if (!state.searchOpen) container.appendChild(renderHabitStrip());
 
   container.appendChild(renderSavedViews());
 
@@ -2187,7 +3340,7 @@ function renderFilters() {
   wrap.appendChild(row1);
 
   const row2 = el('div', 'filter-row');
-  const activeCat = f.type === 'CAT' ? byId(CATEGORIES, f.category) : null;
+  const activeCat = f.type === 'CAT' ? byId(cats(), f.category) : null;
   row2.appendChild(chip(
     activeCat ? activeCat.label : 'Категория',
     !!activeCat,
@@ -2207,7 +3360,7 @@ function renderFilters() {
         state.filter = { type: 'ALL' }; state.categoryOpen = false; render();
       }));
     }
-    CATEGORIES.forEach((cat) => {
+    cats().forEach((cat) => {
       menu.appendChild(categoryRow(cat.label, cat.color, activeCat && activeCat.id === cat.id, () => {
         state.filter = { type: 'CAT', category: cat.id };
         state.categoryOpen = false;
@@ -2346,7 +3499,7 @@ function renderEmpty() {
   } else if (f.type === 'DONE') {
     title = 'Пока ничего не выполнено'; subtitle = 'Здесь появятся закрытые задачи.';
   } else if (f.type === 'CAT') {
-    title = `В категории «${byId(CATEGORIES, f.category).label}» пусто`;
+    title = `В категории «${byId(cats(), f.category).label}» пусто`;
     subtitle = 'Добавьте задачу и выберите эту категорию.';
   } else {
     title = 'Задач пока нет';
@@ -2378,6 +3531,8 @@ function renderCalendarTab(container) {
   const modes = el('div', 'filter-row');
   modes.appendChild(chip('День', state.calendarMode === 'DAY',
     () => { state.calendarMode = 'DAY'; render(); }));
+  modes.appendChild(chip('Неделя', state.calendarMode === 'WEEK',
+    () => { state.calendarMode = 'WEEK'; render(); }));
   modes.appendChild(chip('Месяц', state.calendarMode === 'MONTH',
     () => { state.calendarMode = 'MONTH'; render(); }));
   head.appendChild(modes);
@@ -2386,7 +3541,149 @@ function renderCalendarTab(container) {
   if (!state.selectedDay) state.selectedDay = startOfDay(Date.now());
 
   if (state.calendarMode === 'DAY') renderDayView(container);
+  else if (state.calendarMode === 'WEEK') renderWeekView(container);
   else renderMonthView(container);
+}
+
+const HOUR_PX = 56;
+const DAY_COL_PX = 132;
+
+/**
+ * Режим «Неделя» (п.2): полоса дат сверху, почасовая сетка-таймлайн снизу.
+ *
+ * Колонки прокручиваются горизонтально по 2–3 дня, а не сжимаются все семь
+ * в ширину экрана: семь колонок на телефоне дали бы примерно по 50px, куда
+ * не влезет ни название задачи, ни время. Референс — Google Calendar.
+ *
+ * Тап по дню в полосе прокручивает сетку к этому дню, а не уводит в
+ * дневной режим: неделя должна оставаться обзорной.
+ */
+function weekDaysOf(anchor) {
+  const d = new Date(anchor);
+  // Смещение до понедельника; getDay(): Вс = 0
+  const shift = (d.getDay() + 6) % 7;
+  const monday = startOfDay(anchor) - shift * DAY;
+  // Через startOfDay на каждом шаге: при переходе на летнее время
+  // сутки не равны ровно 24 часам, и простое сложение накопило бы сдвиг
+  return Array.from({ length: 7 }, (_, i) => startOfDay(monday + i * DAY + DAY / 2));
+}
+
+function renderWeekView(container) {
+  const days = weekDaysOf(state.calendarAnchor);
+  const byDay = {};
+  state.tasks.filter((t) => !t.deletedAt && t.deadline).forEach((t) => {
+    const key = startOfDay(t.deadline);
+    (byDay[key] = byDay[key] || []).push(t);
+  });
+
+  const head = el('div', 'week-head');
+  const prev = el('button', 'icon-btn');
+  prev.setAttribute('aria-label', 'Предыдущая неделя');
+  prev.innerHTML = icon(ICONS.left, 19, 2);
+  prev.addEventListener('click', () => {
+    state.calendarAnchor = state.calendarAnchor - 7 * DAY; render();
+  });
+
+  const sameMonth = new Date(days[0]).getMonth() === new Date(days[6]).getMonth();
+  const title = el('span', 'week-title',
+    (sameMonth ? String(new Date(days[0]).getDate()) : fmtDayMonth(days[0])) +
+    ' — ' + fmtDayMonth(days[6]));
+
+  const next = el('button', 'icon-btn');
+  next.setAttribute('aria-label', 'Следующая неделя');
+  next.innerHTML = icon(ICONS.right, 19, 2);
+  next.addEventListener('click', () => {
+    state.calendarAnchor = state.calendarAnchor + 7 * DAY; render();
+  });
+
+  head.append(prev, title, next);
+  container.appendChild(head);
+
+  // Полоса дат с точкой-индикатором — та же идея, что в режиме «Месяц»
+  const strip = el('div', 'week-strip');
+  const today = startOfDay(Date.now());
+
+  days.forEach((day, index) => {
+    const dayTasks = byDay[day] || [];
+    const cell = el('button', 'week-day' + (day === state.selectedDay ? ' active' : ''));
+    cell.appendChild(el('span', 'week-dow',
+      new Date(day).toLocaleDateString('ru-RU', { weekday: 'short' })));
+    const num = el('span', 'week-num' + (day === today ? ' today' : ''),
+      String(new Date(day).getDate()));
+    cell.appendChild(num);
+
+    const dot = el('span', 'dot');
+    if (dayTasks.some((t) => !t.isDone)) dot.classList.add('active');
+    else if (dayTasks.length) dot.classList.add('muted');
+    else dot.style.background = 'transparent';
+    cell.appendChild(dot);
+
+    cell.addEventListener('click', () => {
+      state.selectedDay = day;
+      const grid = $('#week-scroll');
+      // Прокрутка сетки к дню вместо перехода на дневной экран
+      if (grid) grid.scrollTo({ left: index * DAY_COL_PX, behavior: 'smooth' });
+      render();
+    });
+    strip.appendChild(cell);
+  });
+  container.appendChild(strip);
+
+  const body = el('div', 'week-body');
+
+  // Шкала часов вне горизонтального скролла, иначе время уезжало бы за край
+  const hours = el('div', 'week-hours');
+  for (let h = 0; h < 24; h++) {
+    const slot = el('div', 'week-hour', String(h).padStart(2, '0') + ':00');
+    slot.style.height = HOUR_PX + 'px';
+    hours.appendChild(slot);
+  }
+  body.appendChild(hours);
+
+  const scroll = el('div', 'week-scroll');
+  scroll.id = 'week-scroll';
+
+  days.forEach((day) => {
+    const col = el('div', 'week-col' + (day === today ? ' today' : ''));
+    col.style.width = DAY_COL_PX + 'px';
+    col.style.height = (HOUR_PX * 24) + 'px';
+
+    for (let h = 0; h < 24; h++) {
+      const line = el('div', 'week-line');
+      line.style.top = (h * HOUR_PX) + 'px';
+      col.appendChild(line);
+    }
+
+    (byDay[day] || []).forEach((task) => {
+      const d = new Date(task.deadline);
+      const minutes = d.getHours() * 60 + d.getMinutes();
+      const block = el('div', 'week-block' + (task.isDone ? ' done' : ''));
+      block.style.top = ((minutes / 60) * HOUR_PX) + 'px';
+      if (!task.isDone) {
+        const color = byId(PRIORITIES, task.priority).color;
+        block.style.background = `color-mix(in srgb, ${color} 22%, transparent)`;
+      }
+      block.innerHTML = `<span class="week-block-time">${fmtTime(task.deadline)}</span>` +
+        `<span class="week-block-title">${escapeHtml(task.title)}</span>`;
+      block.addEventListener('click', () => openSheet(task.id));
+      col.appendChild(block);
+    });
+
+    scroll.appendChild(col);
+  });
+
+  body.appendChild(scroll);
+  container.appendChild(body);
+
+  // Первое открытие показывает рабочие часы, а не полночь: иначе сетка
+  // встречает пользователя пустым ночным промежутком
+  requestAnimationFrame(() => {
+    const el0 = $('#week-scroll');
+    if (el0 && !el0.dataset.scrolled) {
+      el0.parentElement.scrollTop = HOUR_PX * 7;
+      el0.dataset.scrolled = '1';
+    }
+  });
 }
 
 function renderDayView(container) {
@@ -2519,6 +3816,12 @@ function renderMonthView(container) {
         dots.appendChild(dot);
       });
       cell.appendChild(dots);
+    } else if ((byDay[day] || []).length) {
+      // День, где всё закрыто, иначе выглядел бы пустым — а задачи были
+      const dots = el('span', 'day-dots');
+      const dot = el('span', 'dot muted');
+      dots.appendChild(dot);
+      cell.appendChild(dots);
     }
 
     cell.addEventListener('click', () => {
@@ -2588,6 +3891,36 @@ function renderStatsTab(container) {
     stats.bestStreak ? stats.bestStreak + ' дн.' : '—', 'var(--text-secondary)'));
   container.appendChild(metrics2);
 
+  // Итоги за период (п.11). Только цифры — бейджей и наград нет сознательно
+  container.appendChild(el('p', 'group-label', 'Итоги за период'));
+  const periodRow = el('div', 'chip-row');
+  STATS_PERIODS.forEach((p) => {
+    periodRow.appendChild(chip(p.label, state.statsPeriod === p.id, () => {
+      state.statsPeriod = p.id;
+      render();
+    }));
+  });
+  container.appendChild(periodRow);
+
+  const chosen = STATS_PERIODS.find((p) => p.id === state.statsPeriod) || STATS_PERIODS[0];
+  const summary = periodSummary(
+    chosen.days,
+    state.tasks.filter((t) => !t.deletedAt),
+    state.sessions
+  );
+
+  const periodMetrics = el('div', 'stat-row');
+  periodMetrics.appendChild(metricCard('Выполнено', String(summary.completed), 'var(--accent)'));
+  periodMetrics.appendChild(metricCard('Фокус', formatMinutes(summary.focusMinutes), 'var(--accent)'));
+  container.appendChild(periodMetrics);
+
+  const periodMetrics2 = el('div', 'stat-row');
+  periodMetrics2.appendChild(metricCard('Активных дней',
+    `${summary.activeDays}/${chosen.days}`, 'var(--text-secondary)'));
+  periodMetrics2.appendChild(metricCard('В среднем за день',
+    summary.averagePerDay.toFixed(1), 'var(--text-secondary)'));
+  container.appendChild(periodMetrics2);
+
   container.appendChild(el('p', 'group-label', 'Активность за 13 недель'));
 
   const modes = el('div', 'filter-row');
@@ -2605,7 +3938,7 @@ function renderStatsTab(container) {
       Object.entries(stats.byCategory)
         .sort((a, b) => b[1] - a[1])
         .map(([id, value]) => {
-          const cat = byId(CATEGORIES, id);
+          const cat = byId(cats(), id);
           return { label: cat.label, value, color: cat.color };
         }),
       stats.totalCompleted
@@ -2713,26 +4046,57 @@ let overlayKind = null;
 function openOverlay(kind) {
   overlayKind = kind;
   if (kind === 'settings') renderSettings();
+  if (kind === 'habit') renderHabitCard();
+  if (kind === 'habitEdit') renderHabitSheet();
+  if (kind === 'habits') renderHabitsList();
 
   const scrim = $('#scrim');
   const sheet = $('#sheet');
 
   scrim.classList.remove('hidden');
+  sheet.classList.remove('settled');
   requestAnimationFrame(() => {
     scrim.classList.add('open');
     sheet.classList.add('open');
   });
+
+  // Как только шторка доехала — снимаем transform (класс .settled).
+  // Пока на контейнере висит translateY, Safari на iPhone рисует каретку
+  // в поле ввода со смещением вниз. Ждём именно transform-переход,
+  // а не любой; transitionend может не прийти (шторка уже открыта,
+  // переход прерван) — поэтому дублируем таймером.
+  const settle = (e) => {
+    if (e && e.propertyName !== 'transform') return;
+    if (sheet.classList.contains('open')) sheet.classList.add('settled');
+    sheet.removeEventListener('transitionend', settle);
+  };
+  sheet.addEventListener('transitionend', settle);
+  setTimeout(settle, 340);
 }
 
 function closeOverlay() {
   const kind = overlayKind;
   overlayKind = null;
-  $('#sheet').classList.remove('open');
+  // .settled снимаем первым: пока он висит, на шторке transition: none,
+  // и снятие .open просто погасило бы её без анимации. Между снятием
+  // .settled и .open принудительный reflow — браузер должен зафиксировать
+  // промежуточное состояние (translateY(0) с включённым переходом),
+  // иначе оба изменения схлопнутся в один пересчёт стилей.
+  const sheetEl = $('#sheet');
+  sheetEl.classList.remove('settled');
+  void sheetEl.offsetHeight;
+  sheetEl.classList.remove('open');
   $('#scrim').classList.remove('open');
   setTimeout(() => $('#scrim').classList.add('hidden'), 280);
 
   // Свернуть лист фокуса можно, не убивая идущую сессию
   if (kind !== 'focus') { state.editingId = null; state.draft = null; }
+
+  // Недособранная привычка не должна всплыть при следующем открытии формы.
+  // openedHabitId чистим только при закрытии самой карточки: переход
+  // «карточка → изменить» идёт без закрытия, и сбрасывать его там нельзя
+  if (kind === 'habitEdit') state.habitDraft = null;
+  if (kind === 'habit') state.openedHabitId = null;
   // Недособранный шаблон не должен всплыть при следующем открытии экрана
   templateDraft = null;
 }
@@ -2752,6 +4116,7 @@ function blankDraft() {
     weekdayMask: 0,
     energy: 'MEDIUM',
     subtasks: [],
+    note: '',
     parsedHint: null
   };
 }
@@ -2776,6 +4141,7 @@ function openSheet(taskId) {
       weekdayMask: task.weekdayMask || 0,
       energy: task.energy || 'MEDIUM',
       subtasks: (task.subtasks || []).map((s) => ({ title: s.title, done: !!s.done })),
+      note: task.note || '',
       parsedHint: null
     };
   } else {
@@ -2918,12 +4284,14 @@ function renderSheet() {
     sheet.appendChild(fieldLabel('Категории'));
     sheet.appendChild(el('p', 'muted-small pad',
       'Первая выбранная — основная. На доске задача встанет в каждую колонку'));
-    const cats = el('div', 'chip-wrap');
+    // Имя контейнера отличается от функции cats(): одноимённая локальная
+    // переменная затенила бы её и вызов упал бы с TypeError
+    const catsBox = el('div', 'chip-wrap');
     if (!Array.isArray(d.categories)) d.categories = [];
-    CATEGORIES.forEach((c) => {
+    cats().forEach((c) => {
       const isPrimary = d.category === c.id;
       const isOn = isPrimary || d.categories.includes(c.id);
-      cats.appendChild(chip(
+      catsBox.appendChild(chip(
         isPrimary ? c.label + ' · основная' : c.label,
         isOn,
         () => {
@@ -2942,7 +4310,7 @@ function renderSheet() {
         c.color
       ));
     });
-    sheet.appendChild(cats);
+    sheet.appendChild(catsBox);
 
     if (state.projects.filter((p) => !p.archived).length) {
       sheet.appendChild(fieldLabel('Проект'));
@@ -2985,6 +4353,57 @@ function renderSheet() {
     if (d.recurrence !== 'NONE' && !d.deadline) {
       sheet.appendChild(el('p', 'muted-small pad',
         'Для повтора нужен дедлайн — следующая задача создаётся от него'));
+    }
+
+    // Заметка на виду, а не в дополнительных параметрах (п.5)
+    sheet.appendChild(fieldLabel('Заметка'));
+    const noteInput = el('textarea', 'text-input note-input');
+    noteInput.rows = 3;
+    noteInput.placeholder = 'Детали, ссылки, что помнить';
+    noteInput.value = d.note || '';
+    noteInput.addEventListener('input', () => { d.note = noteInput.value; });
+    sheet.appendChild(noteInput);
+
+    // Файлы доступны только у сохранённой задачи: вложение привязано к её id
+    sheet.appendChild(fieldLabel('Файлы'));
+    const editing = state.editingId ? findTask(state.editingId) : null;
+
+    if (editing) {
+      (editing.attachments || []).forEach((att) => {
+        const row = el('div', 'attach-row');
+        const info = el('button', 'attach-info');
+        info.innerHTML = `<span class="attach-name">${escapeHtml(att.name)}</span>` +
+          (att.size ? `<span class="muted-small">${formatFileSize(att.size)}</span>` : '');
+        info.addEventListener('click', () => openAttachment(att));
+
+        const del = el('button', 'icon-btn danger');
+        del.setAttribute('aria-label', 'Убрать файл');
+        del.innerHTML = icon(ICONS.close, 16, 2.2);
+        del.addEventListener('click', () => removeAttachment(editing.id, att.key));
+
+        row.append(info, del);
+        sheet.appendChild(row);
+      });
+
+      const picker = el('input', 'hidden-input');
+      picker.type = 'file';
+      picker.addEventListener('change', () => {
+        const file = picker.files && picker.files[0];
+        if (file) attachFile(editing.id, file);
+        picker.value = '';
+      });
+
+      const addBtn = el('button', 'ghost-btn full');
+      addBtn.innerHTML = icon(ICONS.plus, 16, 2.2) + '<span>Прикрепить файл</span>';
+      addBtn.addEventListener('click', () => picker.click());
+      sheet.append(picker, addBtn);
+
+      sheet.appendChild(el('p', 'muted-small pad',
+        'Файлы лежат в хранилище браузера. iOS может очистить его при ' +
+        'нехватке места или долгом неиспользовании — важное дублируйте.'));
+    } else {
+      sheet.appendChild(el('p', 'muted-small pad',
+        'Файлы можно приложить после сохранения задачи.'));
     }
 
     sheet.appendChild(fieldLabel('Подзадачи'));
@@ -3117,6 +4536,7 @@ function saveDraft() {
         recurrence: d.recurrence,
         weekdayMask: d.weekdayMask || 0,
         energy: d.energy,
+        note: (d.note || '').trim(),
         subtasks: d.subtasks.slice()
       });
       state.notifiedIds.delete(task.id);
@@ -3138,6 +4558,8 @@ function saveDraft() {
       manualOrder: null,
       boardPositions: {},
       deletedAt: null,
+      note: (d.note || '').trim(),
+      attachments: [],
       subtasks: d.subtasks.slice()
     });
   }
@@ -3378,6 +4800,11 @@ function renderSettings() {
         ? `Проектов: ${projectCount} · шаблонов: ${templateCount}`
         : 'Проекты для группировки доски и заготовленные цепочки задач',
       renderProjects
+    ),
+    actionRow(
+      'Категории',
+      `${state.categories.length} · создать, переименовать, переставить или удалить`,
+      renderCategories
     )
   ]));
 
@@ -3466,6 +4893,109 @@ function actionRow(label, hint, onClick, danger) {
 /* ------------------------------------------------- проекты и шаблоны (экран) */
 
 /**
+ * Управление категориями (п.1). Категория — обычная пользовательская
+ * сущность: создать, переименовать, переставить, удалить. «Другое»
+ * защищена: это приёмник для задач из удаляемых категорий.
+ */
+function renderCategories() {
+  const sheet = $('#sheet-inner');
+  sheet.innerHTML = '';
+
+  const head = el('div', 'sheet-head');
+  const back = el('button', 'icon-btn');
+  back.setAttribute('aria-label', 'Назад');
+  back.innerHTML = icon(ICONS.left, 20, 2);
+  back.addEventListener('click', renderSettings);
+  const titleBox = el('div', 'row-center');
+  titleBox.append(back, el('h2', null, 'Категории'));
+  head.appendChild(titleBox);
+  sheet.appendChild(head);
+
+  const addRow = el('div', 'add-row');
+  const input = el('input', 'text-input');
+  input.type = 'text';
+  input.placeholder = 'Новая категория';
+  const addBtn = el('button', 'icon-btn accent');
+  addBtn.setAttribute('aria-label', 'Добавить категорию');
+  addBtn.innerHTML = icon(ICONS.check, 18, 2.4);
+  const commit = () => {
+    if (!input.value.trim()) return;
+    addCategory(input.value);
+    renderCategories();
+    render();
+  };
+  addBtn.addEventListener('click', commit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') commit(); });
+  addRow.append(input, addBtn);
+  sheet.appendChild(addRow);
+
+  sheet.appendChild(el('p', 'muted-small',
+    'Тап по названию — переименовать. Задачи из удалённой категории ' +
+    'переезжают в «Другое», поэтому её саму удалить нельзя.'));
+
+  state.categories.forEach((category, index) => {
+    const row = el('div', 'project-row');
+
+    const dot = el('span', 'project-dot');
+    dot.style.background = category.color || 'var(--text-muted)';
+
+    const name = el('button', 'project-name cat-name', category.label);
+    name.addEventListener('click', () => {
+      const next = prompt('Название категории', category.label);
+      if (next === null) return;
+      renameCategory(category.id, next);
+      renderCategories();
+      render();
+    });
+
+    // Перестановка стрелками: список короткий, а drag конфликтовал бы
+    // со скроллом шторки на iPhone
+    const up = el('button', 'icon-btn');
+    up.setAttribute('aria-label', 'Выше');
+    up.innerHTML = icon(ICONS.up, 17, 2);
+    up.disabled = index === 0;
+    if (up.disabled) up.style.opacity = '0.3';
+    up.addEventListener('click', () => {
+      moveCategory(category.id, -1); renderCategories(); render();
+    });
+
+    const down = el('button', 'icon-btn');
+    down.setAttribute('aria-label', 'Ниже');
+    down.innerHTML = icon(ICONS.down, 17, 2);
+    down.disabled = index === state.categories.length - 1;
+    if (down.disabled) down.style.opacity = '0.3';
+    down.addEventListener('click', () => {
+      moveCategory(category.id, 1); renderCategories(); render();
+    });
+
+    row.append(dot, name, up, down);
+
+    if (category.id === FALLBACK_CATEGORY) {
+      const lock = el('span', 'muted-small', 'защищена');
+      row.appendChild(lock);
+    } else {
+      const remove = el('button', 'icon-btn danger');
+      remove.setAttribute('aria-label', 'Удалить категорию');
+      remove.innerHTML = icon(ICONS.trash, 17, 2);
+      remove.addEventListener('click', () => {
+        const count = tasksInCategory(category.id);
+        const warn = count
+          ? `Задач в категории: ${count}. Они не удалятся — переедут в «Другое».`
+          : 'В категории нет задач.';
+        if (confirm(`Удалить «${category.label}»?\n${warn}`)) {
+          deleteCategory(category.id);
+          renderCategories();
+          render();
+        }
+      });
+      row.appendChild(remove);
+    }
+
+    sheet.appendChild(row);
+  });
+}
+
+/**
  * Проекты и шаблоны цепочек. Оба списка живут на одном экране: они редко
  * нужны и оба про «настроить один раз, дальше пользоваться».
  *
@@ -3525,27 +5055,44 @@ function renderProjects() {
       'Проектов пока нет. Проект — это уровень над категориями, ' +
       'по нему можно группировать доску.'));
   } else {
+    // Сетка карточек 2 в ряд вместо плоской строки (п.8): цвет, название
+    // и прогресс-бар выполненных вместо текстового счётчика
+    const grid = el('div', 'project-grid');
     state.projects.forEach((project) => {
-      const row = el('div', 'project-row');
-      const dot = el('span', 'project-dot');
-      dot.style.background = projectColor(project);
-      const name = el('p', 'project-name', project.name);
+      const card = el('div', 'project-card');
+      const accent = projectColor(project);
+      card.style.setProperty('--proj', accent);
 
-      const used = state.tasks.filter((t) => !t.deletedAt && t.projectId === project.id).length;
-      const count = el('span', 'muted-small', used ? `${used} задач` : 'пусто');
+      const mark = el('div', 'project-mark');
+      mark.innerHTML = '<span class="project-dot"></span>';
+      card.appendChild(mark);
 
-      const remove = el('button', 'icon-btn danger');
-      remove.setAttribute('aria-label', 'Удалить проект');
-      remove.innerHTML = icon(ICONS.trash, 17, 2);
-      remove.addEventListener('click', () => {
-        deleteProject(project.id);
-        renderProjects();
-        render();
+      card.appendChild(el('p', 'project-name', project.name));
+
+      const own = state.tasks.filter((t) => !t.deletedAt && t.projectId === project.id);
+      const total = own.length;
+      const done = own.filter((t) => t.isDone).length;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+
+      const prog = el('div', 'project-progress' + (total && done === total ? ' complete' : ''));
+      prog.innerHTML = `<span class="progress-track"><span class="progress-fill"
+        style="width:${pct}%;background:${accent}"></span></span><span>${done}/${total}</span>`;
+      card.appendChild(prog);
+
+      // Тап открывает экран проекта, долгое нажатие удаляет: кнопка корзины
+      // на узкой карточке отъедала бы место и ловила случайные тапы
+      card.addEventListener('click', () => openProjectScreen(project.id));
+      attachLongPress(card, () => {
+        if (confirm(`Удалить проект «${project.name}»?\nЗадачи останутся — они просто выйдут из проекта.`)) {
+          deleteProject(project.id);
+          renderProjects();
+          render();
+        }
       });
 
-      row.append(dot, name, count, remove);
-      sheet.appendChild(row);
+      grid.appendChild(card);
     });
+    sheet.appendChild(grid);
     sheet.appendChild(el('p', 'muted-small',
       'Удаление проекта не удаляет задачи — они просто выходят из него.'));
   }
@@ -3558,7 +5105,7 @@ function renderProjects() {
     'Применение создаёт реальные задачи: «День 0» — сегодня, «День 3» — через три дня.'));
 
   state.templates.forEach((template) => {
-    const cat = byId(CATEGORIES, template.category);
+    const cat = byId(cats(), template.category);
     const card = el('div', 'template-card');
 
     const top = el('div', 'template-top');
@@ -3617,14 +5164,14 @@ function renderTemplateBuilder() {
   box.appendChild(nameInput);
 
   box.appendChild(el('p', 'field-label', 'Категория цепочки'));
-  const cats = el('div', 'chip-wrap tight');
-  CATEGORIES.slice(0, 4).forEach((item) => {
-    cats.appendChild(chip(item.label, d.category === item.id, () => {
+  const catsBox = el('div', 'chip-wrap tight');
+  cats().slice(0, 4).forEach((item) => {
+    catsBox.appendChild(chip(item.label, d.category === item.id, () => {
       d.category = item.id;
       renderProjects();
     }, item.color));
   });
-  box.appendChild(cats);
+  box.appendChild(catsBox);
 
   d.steps.forEach((step, index) => {
     const line = el('p', 'template-step removable', `День ${step.dayOffset} · ${step.title}`);
@@ -3713,7 +5260,7 @@ function renderTrash() {
   trash.forEach((task) => {
     const daysLeft = Math.max(0,
       TRASH_RETENTION_DAYS - Math.floor((Date.now() - task.deletedAt) / DAY));
-    const cat = byId(CATEGORIES, task.category);
+    const cat = byId(cats(), task.category);
 
     const row = el('div', 'trash-row');
     const info = el('div', 'trash-info');
@@ -3756,7 +5303,13 @@ function exportJson() {
     app: 'Nix',
     version: 3,
     exportedAt: Date.now(),
-    tasks: state.tasks.filter((t) => !t.deletedAt),
+    // Категории выгружаем именами, а не внутренними id: id локален для
+    // устройства, а имя переносимо. Android с v11 делает так же — это то,
+    // что позволяет переносить бэкап между приложением и PWA.
+    tasks: state.tasks.filter((t) => !t.deletedAt).map((t) => Object.assign({}, t, {
+      category: (byId(cats(), t.category) || {}).label || 'Другое',
+      categories: categoriesOf(t).map((id) => (byId(cats(), id) || {}).label || 'Другое')
+    })),
     sessions: state.sessions
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -3806,12 +5359,13 @@ function importJson(file) {
         deadline,
         reminderAt: raw.reminderAt || null,
         priority: PRIORITIES.some((p) => p.id === raw.priority) ? raw.priority : 'MEDIUM',
-        category: CATEGORIES.some((c) => c.id === raw.category) ? raw.category : 'INBOX',
+        category: resolveCategoryByName(raw.category),
         recurrence: RECURRENCES.some((r) => r.id === raw.recurrence) ? raw.recurrence : 'NONE',
         weekdayMask: Number(raw.weekdayMask) || 0,
         // Файлы старых версий поля categories не знают — тогда категория одна
         categories: Array.isArray(raw.categories)
-          ? raw.categories.filter((c) => CATEGORIES.some((x) => x.id === c) && c !== raw.category)
+          ? raw.categories.map(resolveCategoryByName)
+              .filter((c, i, arr) => arr.indexOf(c) === i && c !== resolveCategoryByName(raw.category))
           : [],
         projectId: null,
         energy: ENERGIES.some((e) => e.id === raw.energy) ? raw.energy : 'MEDIUM',
@@ -3898,6 +5452,8 @@ function init() {
   render();
 
   $('#fab').addEventListener('click', () => openSheet(null));
+  $('#drawer-scrim').addEventListener('click', closeDrawer);
+  attachEdgeSwipe();
   $('#scrim').addEventListener('click', closeOverlay);
 
   const importInput = el('input');
@@ -3913,6 +5469,7 @@ function init() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && snoozeMenuEl) { closeSnoozeMenu(); return; }
+    if (e.key === 'Escape' && $('#drawer').classList.contains('open')) { closeDrawer(); return; }
     if (e.key === 'Escape' && overlayKind) closeOverlay();
   });
 

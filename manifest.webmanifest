@@ -1,13 +1,13 @@
 {
   "name": "Nix — планировщик задач",
   "short_name": "Nix",
-  "description": "Задачи с дедлайнами, приоритетами, категориями, повторами и подзадачами",
+  "description": "Задачи, проекты, привычки: дедлайны, приоритеты, категории, повторы, подзадачи и заметки",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0D0F14",
-  "theme_color": "#0D0F14",
+  "background_color": "#070B0C",
+  "theme_color": "#070B0C",
   "lang": "ru",
   "icons": [
     {

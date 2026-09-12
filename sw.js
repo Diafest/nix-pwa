@@ -1,4 +1,7 @@
-const CACHE = 'nix-v8';
+// v2.2: категории, привычки, неделя, заметки/файлы, новая палитра.
+// Версию ОБЯЗАТЕЛЬНО поднимать при каждом релизе — иначе установленная
+// PWA продолжит отдавать старые app.js и styles.css из кэша.
+const CACHE = 'nix-v9';
 const ASSETS = [
   './',
   './index.html',
@@ -7,6 +10,7 @@ const ASSETS = [
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
+  './icons/icon-maskable-512.png',
   './icons/icon.svg'
 ];
 
