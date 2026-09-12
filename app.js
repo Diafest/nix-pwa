@@ -2160,27 +2160,25 @@ function renderHabitMonth(habit, accent) {
 
   for (let i = 0; i < lead; i++) grid.appendChild(el('span', 'habit-day empty'));
 
-  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const days = Math.min(
+    new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(),
+    now.getDate()
+  );
   for (let d = 1; d <= days; d++) {
     const dayStart = startOfDay(new Date(now.getFullYear(), now.getMonth(), d).getTime());
-    const future = dayStart > today;
     const scheduled = habitScheduledOn(habit, dayStart);
     const done = habitDoneOn(habit, dayStart);
 
-    const cell = el('button', 'habit-day' +
-      (done ? ' done' : '') + (scheduled ? '' : ' off') + (future ? ' future' : ''));
+    const cell = el('button', 'habit-day' + (done ? ' done' : '') + (scheduled ? '' : ' off'));
     cell.textContent = String(d);
     if (done) cell.style.background = accent;
-    cell.disabled = future;
-    if (!future) {
-      // Тап по прошедшему дню переключает отметку целиком: добирать
-      // счётчик задним числом по единице неудобно
-      cell.addEventListener('click', () => {
-        adjustHabit(habit.id, done ? -habitTarget(habit) : habitTarget(habit), dayStart);
-        renderHabitCard();
-        render();
-      });
-    }
+    // Тап по прошедшему дню переключает отметку целиком: добирать
+    // счётчик задним числом по единице неудобно
+    cell.addEventListener('click', () => {
+      adjustHabit(habit.id, done ? -habitTarget(habit) : habitTarget(habit), dayStart);
+      renderHabitCard();
+      render();
+    });
     grid.appendChild(cell);
   }
 
@@ -3830,17 +3828,48 @@ function renderMonthView(container) {
       cell.appendChild(dots);
     }
 
-    cell.addEventListener('click', () => {
-      state.selectedDay = day;
-      state.calendarMode = 'DAY';
-      render();
-    });
+    // Тап по дню только выбирает его — список задач появляется ниже,
+    // не покидая месячный вид. Раньше это сразу переключало на «День»,
+    // и посмотреть несколько дней подряд можно было только по одному,
+    // каждый раз возвращаясь обратно в «Месяц»
+    cell.addEventListener('click', () => { state.selectedDay = day; render(); });
     gridEl.appendChild(cell);
   });
 
   container.appendChild(gridEl);
-  container.appendChild(el('p', 'muted-small pad', 'Тап по дню открывает его расписание'));
   attachMonthSwipe(gridEl);
+
+  const selectedTasks = (byDay[state.selectedDay] || []).slice()
+    .sort((a, b) => (a.deadline || 0) - (b.deadline || 0));
+
+  container.appendChild(el('p', 'group-label spaced', fmtDayMonth(state.selectedDay)));
+  if (!selectedTasks.length) {
+    container.appendChild(el('p', 'muted-small pad', 'На этот день задач нет'));
+  } else {
+    selectedTasks.forEach((task) => container.appendChild(renderMonthDayPreviewRow(task)));
+  }
+}
+
+/**
+ * Компактная строка задачи под сеткой месяца — не полная карточка со
+ * свайпами (та остаётся за «Днём»/«Неделей»), только точка-приоритет,
+ * заголовок и время, чтобы можно было быстро пробежаться по нескольким
+ * дням подряд, не открывая каждый раз отдельный экран.
+ */
+function renderMonthDayPreviewRow(task) {
+  const row = el('button', 'month-preview-row');
+  const dot = el('span', 'dot' + (task.isDone ? ' muted' : ''));
+  if (!task.isDone) dot.style.background = byId(PRIORITIES, task.priority).color;
+
+  const text = el('div', 'month-preview-text');
+  text.appendChild(el('p', 'month-preview-title' + (task.isDone ? ' done' : ''), task.title));
+  if (task.deadline && new Date(task.deadline).getHours() + new Date(task.deadline).getMinutes() > 0) {
+    text.appendChild(el('span', 'muted-small', fmtTime(task.deadline)));
+  }
+
+  row.append(dot, text);
+  row.addEventListener('click', () => openSheet(task.id));
+  return row;
 }
 
 function attachMonthSwipe(node) {
@@ -4361,13 +4390,18 @@ function renderSheet() {
     sheet.appendChild(fieldLabel(d.deadline ? 'Напомнить до дедлайна' : 'Напомнить (нужен дедлайн)'));
     const reminders = el('div', 'chip-wrap');
     REMINDER_OFFSETS.forEach((opt) => {
-      reminders.appendChild(chip(opt.label, d.reminderOffset === opt.minutes, () => {
+      const needsDeadline = !d.deadline && opt.minutes !== null;
+      const btn = chip(opt.label, d.reminderOffset === opt.minutes, () => {
         if (d.deadline || opt.minutes === null) {
           d.reminderOffset = opt.minutes;
           if (opt.minutes !== null) requestNotificationPermission();
           renderSheet();
+        } else {
+          showToast('Сначала укажите дедлайн задачи');
         }
-      }));
+      });
+      if (needsDeadline) btn.classList.add('chip-inactive');
+      reminders.appendChild(btn);
     });
     sheet.appendChild(reminders);
 
@@ -4939,7 +4973,7 @@ function renderSettings() {
   ]));
 
   const about = el('div', 'settings-row');
-  about.appendChild(el('div', 'label', 'Nix · версия 2.3.2'));
+  about.appendChild(el('div', 'label', 'Nix · версия 2.4'));
   about.appendChild(el('div', 'hint',
     'Свайп вправо — выполнить, влево — в корзину. Тап открывает редактирование, ' +
     'ручка справа меняет порядок, долгое нажатие запускает фокус. ' +

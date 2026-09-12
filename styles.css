@@ -170,6 +170,10 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 .chip[aria-pressed="true"] .chip-badge { background: rgba(0,0,0,0.18); color: inherit; }
 .chip-trailing { display: inline-flex; }
+/* Визуально приглушённый чип напоминания, пока дедлайн не задан — сам чип
+   остаётся кликабельным, чтобы клик показал toast-подсказку с причиной,
+   а не просто ничего не делал (как раньше, когда чип выглядел обычным). */
+.chip-inactive { opacity: 0.45; }
 
 .category-menu {
   background: var(--surface); border: 0.5px solid var(--border);
@@ -453,6 +457,22 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .day-num { line-height: 1; }
 .day-dots { display: flex; gap: 2px; }
 .day-dots .dot { width: 4px; height: 4px; border-radius: 50%; }
+
+/* Preview-строка задачи под сеткой месяца — компактная, без свайпов,
+   в отличие от полной .task-карточки в «Дне»/«Неделе» */
+.month-preview-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  text-align: left; padding: 12px 14px; margin-bottom: 8px;
+  background: var(--surface); border-radius: var(--radius-lg);
+}
+.month-preview-row .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.month-preview-row .dot.muted { background: color-mix(in srgb, var(--text-muted) 50%, transparent); }
+.month-preview-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.month-preview-title {
+  margin: 0; font-size: 0.88rem; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.month-preview-title.done { color: var(--text-muted); text-decoration: line-through; }
 
 .day-body { padding-top: 4px; }
 .hour-row { display: flex; align-items: stretch; gap: 0; }
@@ -1063,7 +1083,6 @@ input, textarea, .text-input {
 .habit-day.done { color: var(--bg); font-weight: 600; }
 /* Незапланированный день бледнее: иначе непонятно, почему пропуск не рвёт серию */
 .habit-day.off { background: none; color: color-mix(in srgb, var(--text-muted) 60%, transparent); }
-.habit-day.future { background: none; color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
 .habit-day.empty { background: none; }
 
 .habit-actions { display: flex; gap: 10px; margin-top: 18px; }
