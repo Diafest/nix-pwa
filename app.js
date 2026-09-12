@@ -750,7 +750,14 @@ function nextOccurrence(from, recurrence, now = Date.now(), weekdayMask = 0) {
         steps += 1;
       } while (!hasWeekday(weekdayMask, d.getDay()) && steps < 7);
     } else if (recurrence === 'WEEKLY') d.setDate(d.getDate() + 7);
-    else if (recurrence === 'MONTHLY') d.setMonth(d.getMonth() + 1);
+    else if (recurrence === 'MONTHLY') {
+      // setMonth(+1) на 31 января даёт 3 марта — Date переполняет месяц
+      // так же, как Android Calendar.add(MONTH). Фиксируем день, прибавляем
+      // месяц и, если он не удержался, сводим к последнему дню месяца.
+      const day = d.getDate();
+      d.setMonth(d.getMonth() + 1);
+      if (d.getDate() !== day) d.setDate(0);
+    }
     else if (recurrence === 'YEARLY') {
       // setFullYear(+1) на 29 февраля даёт 1 марта — Date переполняет месяц.
       // Android на Calendar.add(YEAR) сводит такую дату к 28 февраля,
@@ -784,7 +791,9 @@ const isSameMonth = (a, b) => {
 
 const addMonths = (ms, amount) => {
   const d = new Date(ms);
+  const day = d.getDate();
   d.setMonth(d.getMonth() + amount);
+  if (d.getDate() !== day) d.setDate(0);
   return d.getTime();
 };
 
@@ -808,6 +817,11 @@ function parseDate(input, now = Date.now()) {
   const lower = input.toLowerCase();
   const d = new Date(now);
   let matched = [];
+  // Точные диапазоны найденных фрагментов в исходной строке — по ним,
+  // а не по отдельным словам, cleanText вырезает распознанное. Слово "18"
+  // из "в 18" иначе могло бы случайно вырезаться и из другого места текста,
+  // где оно значит что-то своё (например, из "№18")
+  const matchedRanges = [];
   let daySet = false;
   let timeSet = false;
 
@@ -819,15 +833,25 @@ function parseDate(input, now = Date.now()) {
     else if (unit.startsWith('час') || unit === 'ч') d.setHours(d.getHours() + amount);
     else if (unit.startsWith('дн') || unit === 'день') d.setDate(d.getDate() + amount);
     else if (unit.startsWith('недел')) d.setDate(d.getDate() + amount * 7);
-    return { title: cleanText(input, relative[0]), deadline: d.getTime(), phrase: relative[0] };
+    return {
+      title: cleanText(input, [[relative.index, relative.index + relative[0].length]]),
+      deadline: d.getTime(),
+      phrase: relative[0]
+    };
   }
 
   if (lower.includes('послезавтра')) {
     d.setDate(d.getDate() + 2); daySet = true; matched.push('послезавтра');
+    const idx = lower.indexOf('послезавтра');
+    matchedRanges.push([idx, idx + 'послезавтра'.length]);
   } else if (lower.includes('завтра')) {
     d.setDate(d.getDate() + 1); daySet = true; matched.push('завтра');
+    const idx = lower.indexOf('завтра');
+    matchedRanges.push([idx, idx + 'завтра'.length]);
   } else if (lower.includes('сегодня')) {
     daySet = true; matched.push('сегодня');
+    const idx = lower.indexOf('сегодня');
+    matchedRanges.push([idx, idx + 'сегодня'.length]);
   } else {
     for (const [word, dow] of Object.entries(WEEKDAY_WORDS)) {
       const hit = lower.match(new RegExp('(?:в|во)\\s+' + word));
@@ -836,6 +860,7 @@ function parseDate(input, now = Date.now()) {
         let guard = 0;
         while (d.getDay() !== dow && guard < 8) { d.setDate(d.getDate() + 1); guard++; }
         daySet = true; matched.push(hit[0]);
+        matchedRanges.push([hit.index, hit.index + hit[0].length]);
         break;
       }
     }
@@ -847,6 +872,7 @@ function parseDate(input, now = Date.now()) {
         d.setDate(parseInt(hit[1], 10));
         if (d.getTime() < now) d.setFullYear(d.getFullYear() + 1);
         daySet = true; matched.push(hit[0]);
+        matchedRanges.push([hit.index, hit.index + hit[0].length]);
       }
     }
   }
@@ -856,6 +882,7 @@ function parseDate(input, now = Date.now()) {
     const h = parseInt(explicit[1], 10), m = parseInt(explicit[2], 10);
     if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
       d.setHours(h, m, 0, 0); timeSet = true; matched.push(explicit[0]);
+      matchedRanges.push([explicit.index, explicit.index + explicit[0].length]);
     }
   }
 
@@ -869,6 +896,7 @@ function parseDate(input, now = Date.now()) {
         if (part === 'дня' && h >= 1 && h <= 6) h += 12;
         if (part === 'ночи' && h === 12) h = 0;
         d.setHours(h, 0, 0, 0); timeSet = true; matched.push(loose[0]);
+        matchedRanges.push([loose.index, loose.index + loose[0].length]);
       }
     }
   }
@@ -883,14 +911,23 @@ function parseDate(input, now = Date.now()) {
   }
 
   const phrase = matched.join(' ');
-  return { title: cleanText(input, phrase), deadline: d.getTime(), phrase };
+  return { title: cleanText(input, matchedRanges), deadline: d.getTime(), phrase };
 }
 
-function cleanText(original, phrase) {
-  if (!phrase) return original.trim();
+/**
+ * Убирает распознанные фрагменты из текста по их точным позициям, а не по
+ * отдельным словам — иначе короткий токен вроде "18" из "в 18" мог бы
+ * случайно вырезаться из другого места строки, где значит что-то своё
+ * (например, из "№18"). Диапазоны вычислены на lowercase-копии строки и по
+ * длине совпадают с исходной — toLowerCase не меняет длину кириллицы и цифр.
+ */
+function cleanText(original, ranges) {
+  if (!ranges || !ranges.length) return original.trim();
   let result = original;
-  phrase.split(' ').filter(Boolean).forEach((part) => {
-    result = result.replace(new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), '');
+  [...ranges].sort((a, b) => b[0] - a[0]).forEach(([start, end]) => {
+    if (start >= 0 && end <= result.length) {
+      result = result.slice(0, start) + result.slice(end);
+    }
   });
   return result.replace(/\s{2,}/g, ' ').trim().replace(/[,.;]+$/, '').trim() || original.trim();
 }
@@ -1561,24 +1598,25 @@ function renderTaskTile(task, dragCtx) {
  * Нераспознанная метка остаётся в тексте как есть, а не проглатывается молча.
  */
 const TAG_CATEGORIES = {
-  'входящие': 'INBOX', 'inbox': 'INBOX',
+  'входящие': 'INBOX', 'входящее': 'INBOX', 'inbox': 'INBOX',
   'работа': 'WORK', 'работу': 'WORK', 'work': 'WORK',
-  'личное': 'PERSONAL', 'дом': 'PERSONAL',
-  'учёба': 'STUDY', 'учеба': 'STUDY',
+  'личное': 'PERSONAL', 'личная': 'PERSONAL', 'дом': 'PERSONAL',
+  'учёба': 'STUDY', 'учеба': 'STUDY', 'учить': 'STUDY',
   'здоровье': 'HEALTH', 'спорт': 'HEALTH',
   'финансы': 'FINANCE', 'деньги': 'FINANCE',
   'другое': 'OTHER', 'прочее': 'OTHER'
 };
 
 const TAG_PRIORITIES = {
-  'важно': 'HIGH', 'срочно': 'HIGH', 'высокий': 'HIGH',
-  'средне': 'MEDIUM', 'средний': 'MEDIUM',
+  'важно': 'HIGH', 'важное': 'HIGH', 'срочно': 'HIGH', 'высокий': 'HIGH', '!': 'HIGH',
+  'средне': 'MEDIUM', 'средний': 'MEDIUM', 'обычно': 'MEDIUM',
   'низкий': 'LOW', 'потом': 'LOW', 'неважно': 'LOW'
 };
 
 const TAG_ENERGIES = {
   'тяжёлая': 'HIGH', 'тяжелая': 'HIGH', 'сложно': 'HIGH',
-  'обычная': 'MEDIUM', 'лёгкая': 'LOW', 'легкая': 'LOW', 'просто': 'LOW'
+  'обычная': 'MEDIUM', 'средне': 'MEDIUM',
+  'лёгкая': 'LOW', 'легкая': 'LOW', 'просто': 'LOW'
 };
 
 function parseTags(input) {
@@ -3004,6 +3042,11 @@ function openFocus(taskId) {
     totalSeconds: state.settings.focusWorkMinutes * 60,
     remaining: state.settings.focusWorkMinutes * 60,
     startedAt: 0,
+    // Абсолютный момент окончания фазы — источник истины для remaining.
+    // setInterval в свёрнутой/заблокированной вкладке iOS Safari
+    // троттлится или останавливается: декремент тиков давал неверный
+    // остаток и, что хуже, откладывал само уведомление о завершении.
+    endsAt: 0,
     intervals: 0
   };
   renderFocusSheet();
@@ -3015,6 +3058,7 @@ function startFocus() {
   state.focus.active = true;
   state.focus.paused = false;
   state.focus.startedAt = Date.now();
+  state.focus.endsAt = state.focus.startedAt + state.focus.totalSeconds * 1000;
   state.settings.focusHintSeen = true;
   saveSettings();
   runFocusTicker();
@@ -3031,6 +3075,7 @@ function pauseFocus() {
 function resumeFocus() {
   if (!state.focus) return;
   state.focus.paused = false;
+  state.focus.endsAt = Date.now() + state.focus.remaining * 1000;
   runFocusTicker();
   renderFocusSheet();
 }
@@ -3055,30 +3100,57 @@ function runFocusTicker() {
     const f = state.focus;
     if (!f || !f.active || f.paused) { clearInterval(focusTicker); return; }
 
-    f.remaining -= 1;
+    // От endsAt, а не декрементом: если вкладка была свёрнута/заблокирована
+    // и setInterval троттлился, следующий реальный тик сразу покажет
+    // верный остаток вместо накопленной ошибки
+    f.remaining = Math.max(0, Math.ceil((f.endsAt - Date.now()) / 1000));
     if (f.remaining > 0) { renderFocusSheet(); return; }
 
     clearInterval(focusTicker);
-    if (f.phase === 'WORK') {
-      saveFocusSession(Math.round(f.totalSeconds / 60), true);
-      notifyFocus('Интервал завершён', f.taskTitle ? f.taskTitle + ' — время передохнуть' : 'Время передохнуть');
-      f.phase = 'BREAK';
-      f.intervals += 1;
-      f.totalSeconds = state.settings.focusBreakMinutes * 60;
-      f.remaining = f.totalSeconds;
-      f.startedAt = Date.now();
-      runFocusTicker();
-    } else {
-      notifyFocus('Перерыв окончен', 'Можно возвращаться к работе');
-      f.phase = 'WORK';
-      f.active = false;
-      f.totalSeconds = state.settings.focusWorkMinutes * 60;
-      f.remaining = f.totalSeconds;
-    }
-    renderFocusSheet();
-    render();
+    finishFocusPhase(f);
   }, 1000);
 }
+
+function finishFocusPhase(f) {
+  if (f.phase === 'WORK') {
+    saveFocusSession(Math.round(f.totalSeconds / 60), true);
+    notifyFocus('Интервал завершён', f.taskTitle ? f.taskTitle + ' — время передохнуть' : 'Время передохнуть');
+    f.phase = 'BREAK';
+    f.intervals += 1;
+    f.totalSeconds = state.settings.focusBreakMinutes * 60;
+    f.remaining = f.totalSeconds;
+    f.startedAt = Date.now();
+    f.endsAt = f.startedAt + f.totalSeconds * 1000;
+    runFocusTicker();
+  } else {
+    notifyFocus('Перерыв окончен', 'Можно возвращаться к работе');
+    f.phase = 'WORK';
+    f.active = false;
+    f.totalSeconds = state.settings.focusWorkMinutes * 60;
+    f.remaining = f.totalSeconds;
+  }
+  renderFocusSheet();
+  render();
+}
+
+// Таймер, оставшийся тикать в фоновой вкладке, мог не досчитать реальное
+// время из-за троттлинга — при возврате видимости досчитываем сразу,
+// не дожидаясь следующего интервала setInterval. Завершение фазы
+// вызывается синхронно здесь же, а не через runFocusTicker, чтобы
+// уведомление о завершении не задержалось ещё на секунду.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  const f = state.focus;
+  if (!f || !f.active || f.paused) return;
+  const left = Math.max(0, Math.ceil((f.endsAt - Date.now()) / 1000));
+  if (left <= 0) {
+    clearInterval(focusTicker);
+    finishFocusPhase(f);
+  } else if (left !== f.remaining) {
+    f.remaining = left;
+    renderFocusSheet();
+  }
+});
 
 function saveFocusSession(minutes, completed) {
   if (minutes < 1) return;
@@ -5636,6 +5708,27 @@ function init() {
         // по file:// service worker недоступен — это нормально
       });
     });
+
+    // Новый SW активируется в фоне сразу (skipWaiting в sw.js), но старый
+    // JS в памяти вкладки сам себя не заменит — без перезагрузки версия
+    // на экране остаётся прежней до полного закрытия приложения
+    let reloading = false;
+    let pendingReload = false;
+    const applyReload = () => {
+      if (reloading) return;
+      // Посреди фокус-сессии перезагрузка оборвала бы таймер — откладываем
+      // до паузы/остановки сессии вместо того, чтобы применять немедленно
+      if (state.focus && state.focus.active) { pendingReload = true; return; }
+      reloading = true;
+      window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', applyReload);
+    const focusReloadCheck = setInterval(() => {
+      if (pendingReload && (!state.focus || !state.focus.active)) {
+        clearInterval(focusReloadCheck);
+        applyReload();
+      }
+    }, 5000);
   }
 }
 
