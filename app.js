@@ -4939,7 +4939,7 @@ function renderSettings() {
   ]));
 
   const about = el('div', 'settings-row');
-  about.appendChild(el('div', 'label', 'Nix · версия 2.3'));
+  about.appendChild(el('div', 'label', 'Nix · версия 2.3.1'));
   about.appendChild(el('div', 'hint',
     'Свайп вправо — выполнить, влево — в корзину. Тап открывает редактирование, ' +
     'ручка справа меняет порядок, долгое нажатие запускает фокус. ' +

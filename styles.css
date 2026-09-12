@@ -87,7 +87,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .muted-small { font-size: 0.74rem; color: var(--text-secondary); margin: 0; }
 .center { text-align: center; }
 .pad { padding: 8px 4px; }
-.row-center { display: flex; align-items: center; gap: 10px; }
+.row-center { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.row-center > * { min-width: 0; }
 .danger { color: var(--danger) !important; }
 
 /* ---------- Splash ---------- */
@@ -579,7 +580,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .sheet-inner {
   max-width: 600px; margin: 0 auto; width: 100%;
   padding: 0 20px calc(24px + env(safe-area-inset-bottom));
-  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   touch-action: pan-y;
 }
@@ -589,7 +590,10 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 
 .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 4px; }
-.sheet-head h2 { font-size: 1.15rem; font-weight: 600; margin: 0; }
+.sheet-head h2 {
+  font-size: 1.15rem; font-weight: 600; margin: 0;
+  overflow-wrap: anywhere;
+}
 
 .field-label { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); margin: 18px 0 8px 4px; }
 
@@ -961,8 +965,8 @@ input, textarea, .text-input {
 .project-progress.complete { color: var(--accent); }
 
 .project-header { padding: 4px 0 10px; }
-.project-header-top { display: flex; align-items: center; gap: 10px; }
-.project-title { margin: 0; font-size: 1.15rem; font-weight: 600; }
+.project-header-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.project-title { margin: 0; font-size: 1.15rem; font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
 .project-header .project-progress { margin-top: 12px; }
 
 /* Название категории кликабельно — переименование по тапу (п.1) */
