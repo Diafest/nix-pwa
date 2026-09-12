@@ -114,7 +114,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .app {
   max-width: 640px;
   margin: 0 auto;
-  padding: max(12px, env(safe-area-inset-top)) 16px 150px;
+  padding: max(12px, env(safe-area-inset-top)) 16px 138px;
 }
 
 .topbar { display: flex; align-items: center; justify-content: space-between; padding: 6px 0 4px; }
@@ -132,7 +132,12 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   transition: background 0.15s ease; flex: 0 0 auto;
 }
 .icon-btn:active { background: var(--surface); }
-.icon-btn.small { width: 28px; height: 28px; }
+/* Визуально 28px, но зона касания расширена прозрачным ::before до
+   ~44px — та же логика, что и в .color-pick. Кнопка используется
+   для частых точечных действий (удаление подзадачи), где точность
+   тапа особенно важна. */
+.icon-btn.small { width: 28px; height: 28px; position: relative; }
+.icon-btn.small::before { content: ''; position: absolute; inset: -8px; }
 .icon-btn.accent { color: var(--accent); }
 .icon-btn.active { color: var(--accent); }
 .icon-btn.danger { color: var(--danger); }
@@ -147,7 +152,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 7px 14px; border-radius: 20px;
+  padding: 10px 14px; border-radius: 20px;
   border: 0.5px solid var(--border); background: transparent;
   color: var(--text-secondary);
   font-size: 0.78rem; font-weight: 500; white-space: nowrap;
@@ -389,12 +394,15 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   background: transparent; color: var(--accent-ink);
   display: flex; align-items: center; justify-content: center;
   transition: all 0.15s ease;
+  position: relative;
 }
+.check::before { content: ''; position: absolute; inset: -11px; }
 .check[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
 .check svg { opacity: 0; transform: scale(0.6); transition: all 0.15s ease; }
 .check[aria-checked="true"] svg { opacity: 1; transform: scale(1); }
 .check[aria-checked="true"] { animation: pop 0.26s ease; }
 .check.small { width: 17px; height: 17px; border-radius: 6px; margin-top: 0; }
+.check.small::before { inset: -5px; }
 
 @keyframes pop {
   0% { transform: scale(1); }
@@ -458,7 +466,11 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   background: var(--surface); border: 0.5px solid var(--border);
   border-radius: var(--radius-lg); padding: 14px; position: relative; overflow: hidden;
 }
+.stats-section { margin-top: 26px; }
+.stats-section:first-child { margin-top: 0; }
+.stats-section .group-label { margin-top: 0; }
 .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.stat-row:last-child { margin-bottom: 0; }
 .stat-head { display: flex; align-items: center; gap: 5px; font-size: 0.7rem; color: var(--text-secondary); }
 .stat-value { font-size: 1.6rem; font-weight: 600; margin: 4px 0 0; }
 .stat-value.muted { color: var(--text-muted); }
@@ -473,7 +485,17 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 
 .heatmap { display: grid; grid-template-columns: repeat(13, 1fr); gap: 3px; }
 .heat-col { display: grid; grid-template-rows: repeat(7, 1fr); gap: 3px; }
-.heat-cell { aspect-ratio: 1; border-radius: 2px; background: var(--border); border: none; padding: 0; }
+/* Ячейка визуально ~24px (формат сетки 13×7 не позволяет её увеличить),
+   но тач-зона расширена прозрачным псевдоэлементом до ~40px — тот же
+   приём, что и в .color-pick, только через ::before, так как сама
+   ячейка уже занята цветом заливки. */
+.heat-cell {
+  aspect-ratio: 1; border-radius: 2px; background: var(--border);
+  border: none; padding: 0; position: relative;
+}
+.heat-cell::before {
+  content: ''; position: absolute; inset: -6px;
+}
 .heat-cell.today { outline: 1px solid var(--text-secondary); outline-offset: -1px; }
 .heat-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin-top: 10px; }
 .heat-cell.legend { width: 9px; height: 9px; aspect-ratio: auto; }
@@ -530,25 +552,41 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0;
-  max-height: 90dvh; overflow-y: auto;
+  max-height: 90dvh;
+  display: flex; flex-direction: column;
   background: var(--surface-elevated);
   border-radius: 18px 18px 0 0; border-top: 0.5px solid var(--border);
   z-index: 101; transform: translateY(100%);
   transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-  padding: 0 20px calc(24px + env(safe-area-inset-bottom));
+  /* Сам контейнер шторки не скроллится — скроллится только .sheet-inner
+     ниже. Разделение нужно, чтобы свайп по хэндлу/шапке закрывал шторку,
+     а не путался с прокруткой её содержимого (см. attachSheetDrag). */
+  overflow: hidden;
+  touch-action: none;
 }
 .sheet.open { transform: translateY(0); }
 /* Когда шторка доехала — убираем transform совсем.
    В Safari на iOS поле ввода внутри трансформированного контейнера
    получает каретку со смещением (мигает ниже самого поля), особенно
    после подъёма клавиатуры. Анимация нужна только на время открытия,
-   поэтому в покое переводим шторку в обычный поток: transform: none. */
+   поэтому в покое переводим шторку в обычный поток: transform: none.
+   Инлайновый transform во время свайпа (см. attachSheetDrag) всё равно
+   перевешивает это правило — style-атрибут специфичнее класса. */
 .sheet.open.settled {
   transform: none;
   transition: none;
 }
-.sheet-inner { max-width: 600px; margin: 0 auto; }
-.grabber { width: 36px; height: 4px; background: var(--border-strong); border-radius: 2px; margin: 10px auto 4px; }
+.sheet-inner {
+  max-width: 600px; margin: 0 auto; width: 100%;
+  padding: 0 20px calc(24px + env(safe-area-inset-bottom));
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+.grabber {
+  width: 36px; height: 4px; background: var(--border-strong); border-radius: 2px;
+  margin: 10px auto 4px; flex: 0 0 auto;
+}
 
 .sheet-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 4px; }
 .sheet-head h2 { font-size: 1.15rem; font-weight: 600; margin: 0; }
@@ -586,6 +624,7 @@ textarea.text-input { resize: none; min-height: 46px; }
   display: flex; align-items: center; justify-content: center;
   color: var(--accent);
 }
+.mic-btn::before { content: ''; position: absolute; inset: -5px; }
 
 .parsed-hint {
   display: inline-flex; align-items: center; gap: 6px;
@@ -796,7 +835,7 @@ input, textarea, .text-input {
 }
 
 /* Домашняя полоска iPhone перекрывает нижний ряд — поднимаем содержимое */
-.app { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
+.app { padding-bottom: calc(138px + env(safe-area-inset-bottom)); }
 
 /* Островок и «чёлка»: статус-бар прозрачный, значит шапку отодвигаем сами */
 .topbar { padding-top: max(6px, env(safe-area-inset-top)); }
@@ -996,6 +1035,13 @@ input, textarea, .text-input {
 }
 .habit-dial-value { font-size: 1.6rem; font-weight: 600; }
 
+.habit-data-group {
+  margin-top: 20px; padding: 14px;
+  background: var(--surface); border: 0.5px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.habit-data-group .habit-month { margin-top: 0; }
+.habit-data-group .stat-row { margin-top: 16px; margin-bottom: 0; }
 .habit-month { margin-top: 20px; }
 .habit-month-head, .habit-month-grid {
   display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px;
@@ -1023,7 +1069,10 @@ input, textarea, .text-input {
 }
 .ghost-btn.full { width: 100%; margin-top: 10px; }
 .danger-link {
-  display: block; margin: 14px auto 8px; color: var(--danger); font-size: 0.8rem;
+  display: block; width: 100%; text-align: center;
+  margin: 22px auto 8px; padding-top: 16px;
+  border-top: 0.5px solid var(--border);
+  color: var(--danger); font-size: 0.8rem;
 }
 
 .emoji-pick {

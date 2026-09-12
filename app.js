@@ -1884,6 +1884,7 @@ function openDrawer() {
   renderDrawer();
   const scrim = $('#drawer-scrim');
   const drawer = $('#drawer');
+  lockBodyScroll();
   scrim.classList.remove('hidden');
   requestAnimationFrame(() => {
     scrim.classList.add('open');
@@ -1895,6 +1896,7 @@ function closeDrawer() {
   $('#drawer').classList.remove('open');
   $('#drawer-scrim').classList.remove('open');
   setTimeout(() => $('#drawer-scrim').classList.add('hidden'), 280);
+  unlockBodyScroll();
 }
 
 function renderDrawer() {
@@ -2093,13 +2095,17 @@ function renderHabitCard() {
   counter.append(minus, dial, plus);
   sheet.appendChild(counter);
 
-  sheet.appendChild(renderHabitMonth(habit, accent));
+  // Календарь и метрики — одна смысловая группа («данные о привычке»),
+  // визуально отделённая от счётчика сверху и действий снизу
+  const dataGroup = el('div', 'habit-data-group');
+  dataGroup.appendChild(renderHabitMonth(habit, accent));
 
   const metrics = el('div', 'stat-row');
   metrics.appendChild(metricCard('Серия', String(m.streak), accent));
   metrics.appendChild(metricCard('Выполнение', Math.round(m.rate * 100) + '%', 'var(--text-secondary)'));
   metrics.appendChild(metricCard('Всего', String(m.total), 'var(--text-secondary)'));
-  sheet.appendChild(metrics);
+  dataGroup.appendChild(metrics);
+  sheet.appendChild(dataGroup);
 
   const actions = el('div', 'habit-actions');
   const paused = habit.status === 'PAUSED';
@@ -3856,6 +3862,15 @@ function attachMonthSwipe(node) {
 
 /* ---------------------------------------------------------------- статистика */
 
+/** Обёртка одной смысловой секции статистики — своя подложка и заголовок,
+ * чтобы разнотипные блоки не сливались в сплошную стену карточек. */
+function statsSection(label, nodes) {
+  const wrap = el('div', 'stats-section');
+  if (label) wrap.appendChild(el('p', 'group-label', label));
+  nodes.forEach((n) => wrap.appendChild(n));
+  return wrap;
+}
+
 function renderStatsTab(container) {
   const stats = calcStats();
   container.appendChild(el('h1', 'screen-title', 'Статистика'));
@@ -3878,21 +3893,19 @@ function renderStatsTab(container) {
     'var(--accent)'
   ));
   top.appendChild(ringCard);
-  container.appendChild(top);
 
   const metrics = el('div', 'stat-row');
   metrics.appendChild(metricCard('Сегодня', String(stats.completedToday), 'var(--accent)'));
   metrics.appendChild(metricCard('Фокус сегодня', formatMinutes(stats.focusToday), 'var(--accent)'));
-  container.appendChild(metrics);
 
   const metrics2 = el('div', 'stat-row');
   metrics2.appendChild(metricCard('Закрыто за неделю', String(stats.completedThisWeek), 'var(--text-secondary)'));
   metrics2.appendChild(metricCard('Лучшая серия',
     stats.bestStreak ? stats.bestStreak + ' дн.' : '—', 'var(--text-secondary)'));
-  container.appendChild(metrics2);
+
+  container.appendChild(statsSection(null, [top, metrics, metrics2]));
 
   // Итоги за период (п.11). Только цифры — бейджей и наград нет сознательно
-  container.appendChild(el('p', 'group-label', 'Итоги за период'));
   const periodRow = el('div', 'chip-row');
   STATS_PERIODS.forEach((p) => {
     periodRow.appendChild(chip(p.label, state.statsPeriod === p.id, () => {
@@ -3900,7 +3913,6 @@ function renderStatsTab(container) {
       render();
     }));
   });
-  container.appendChild(periodRow);
 
   const chosen = STATS_PERIODS.find((p) => p.id === state.statsPeriod) || STATS_PERIODS[0];
   const summary = periodSummary(
@@ -3912,29 +3924,25 @@ function renderStatsTab(container) {
   const periodMetrics = el('div', 'stat-row');
   periodMetrics.appendChild(metricCard('Выполнено', String(summary.completed), 'var(--accent)'));
   periodMetrics.appendChild(metricCard('Фокус', formatMinutes(summary.focusMinutes), 'var(--accent)'));
-  container.appendChild(periodMetrics);
 
   const periodMetrics2 = el('div', 'stat-row');
   periodMetrics2.appendChild(metricCard('Активных дней',
     `${summary.activeDays}/${chosen.days}`, 'var(--text-secondary)'));
   periodMetrics2.appendChild(metricCard('В среднем за день',
     summary.averagePerDay.toFixed(1), 'var(--text-secondary)'));
-  container.appendChild(periodMetrics2);
 
-  container.appendChild(el('p', 'group-label', 'Активность за 13 недель'));
+  container.appendChild(statsSection('Итоги за период', [periodRow, periodMetrics, periodMetrics2]));
 
   const modes = el('div', 'filter-row');
   modes.appendChild(chip('Задачи', state.heatmapMode === 'TASKS',
     () => { state.heatmapMode = 'TASKS'; render(); }));
   modes.appendChild(chip('Часы фокуса', state.heatmapMode === 'FOCUS',
     () => { state.heatmapMode = 'FOCUS'; render(); }));
-  container.appendChild(modes);
 
-  container.appendChild(renderHeatmap(stats));
+  container.appendChild(statsSection('Активность за 13 недель', [modes, renderHeatmap(stats)]));
 
   if (Object.keys(stats.byCategory).length) {
-    container.appendChild(el('p', 'group-label', 'По категориям'));
-    container.appendChild(renderBreakdown(
+    container.appendChild(statsSection('По категориям', [renderBreakdown(
       Object.entries(stats.byCategory)
         .sort((a, b) => b[1] - a[1])
         .map(([id, value]) => {
@@ -3942,23 +3950,21 @@ function renderStatsTab(container) {
           return { label: cat.label, value, color: cat.color };
         }),
       stats.totalCompleted
-    ));
+    )]));
   }
 
   if (Object.keys(stats.byEnergy).length) {
-    container.appendChild(el('p', 'group-label', 'По затратам сил'));
-    container.appendChild(renderBreakdown(
+    container.appendChild(statsSection('По затратам сил', [renderBreakdown(
       ENERGIES.filter((e) => stats.byEnergy[e.id])
         .map((e) => ({ label: e.label, value: stats.byEnergy[e.id], color: e.color })),
       stats.totalCompleted
-    ));
+    )]));
   }
 
-  container.appendChild(el('p', 'group-label', 'Всего'));
   const totals = el('div', 'stat-row');
   totals.appendChild(metricCard('Выполнено за всё время', String(stats.totalCompleted), 'var(--accent)'));
   totals.appendChild(metricCard('Всего в фокусе', formatMinutes(stats.focusAll), 'var(--text-secondary)'));
-  container.appendChild(totals);
+  container.appendChild(statsSection('Всего', [totals]));
 
   if (!stats.totalCompleted && !stats.sessionsCount) {
     container.appendChild(el('p', 'muted-small center pad',
@@ -4041,6 +4047,92 @@ function renderBreakdown(entries, total) {
 }
 /* Nix PWA — листы задачи, фокуса, настроек и корзины + точка входа. */
 
+/**
+ * Блокировка скролла фоновой страницы, пока открыта шторка или drawer.
+ * Раньше body оставался в обычном потоке под открытой модалкой: свайп,
+ * не попавший точно в интерактивный элемент шторки, проваливался на
+ * скролл страницы позади неё — человек «терял» открытую шторку из виду
+ * или просто не мог понять, почему жест не закрывает её.
+ *
+ * Счётчик, а не булев флаг: drawer и sheet используют общий приём, и
+ * хотя на практике одновременно открытыми не бывают, счётчик страхует
+ * от преждевременной разблокировки при пересекающихся вызовах.
+ */
+let scrollLockCount = 0;
+let scrollLockY = 0;
+
+function lockBodyScroll() {
+  if (scrollLockCount === 0) {
+    scrollLockY = window.scrollY || window.pageYOffset || 0;
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${scrollLockY}px`;
+    document.body.style.left = '0';
+    document.body.style.right = '0';
+    document.body.style.width = '100%';
+  }
+  scrollLockCount++;
+}
+
+function unlockBodyScroll() {
+  scrollLockCount = Math.max(0, scrollLockCount - 1);
+  if (scrollLockCount === 0) {
+    document.body.style.position = '';
+    document.body.style.top = '';
+    document.body.style.left = '';
+    document.body.style.right = '';
+    document.body.style.width = '';
+    window.scrollTo(0, scrollLockY);
+  }
+}
+
+/**
+ * Свайп вниз для закрытия шторки — жест начинается либо в хэндл-зоне
+ * (полоска + заголовок листа), либо где угодно внутри контента, если тот
+ * уже проскроллен до самого верха (стандартное поведение iOS bottom sheet:
+ * тянуть вниз можно, только когда внутри больше нечего скроллить вверх).
+ * Раньше `.grabber` был чисто декоративным — без единого обработчика.
+ */
+function attachSheetDrag(sheetEl, handleZone, contentEl, onDismiss) {
+  let startY = 0, dy = 0, dragging = false, active = false;
+
+  const withinHandle = (target) => handleZone.contains(target);
+  const contentAtTop = () => contentEl.scrollTop <= 0;
+
+  sheetEl.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const target = e.touches[0].target;
+    active = withinHandle(target) || contentAtTop();
+    if (!active) return;
+    startY = e.touches[0].clientY;
+    dy = 0; dragging = true;
+    sheetEl.style.transition = 'none';
+  }, { passive: true });
+
+  sheetEl.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    const y = e.touches[0].clientY - startY;
+    // Не даём тянуть шторку вверх выше исходной позиции — только вниз
+    dy = Math.max(0, y);
+    if (dy > 0) sheetEl.style.transform = `translateY(${dy}px)`;
+  }, { passive: true });
+
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    sheetEl.style.transition = '';
+    const threshold = 110;
+    if (dy > threshold) {
+      onDismiss();
+    } else {
+      sheetEl.style.transform = '';
+    }
+    dy = 0;
+  };
+
+  sheetEl.addEventListener('touchend', finish, { passive: true });
+  sheetEl.addEventListener('touchcancel', finish, { passive: true });
+}
+
 let overlayKind = null;
 
 function openOverlay(kind) {
@@ -4049,12 +4141,16 @@ function openOverlay(kind) {
   if (kind === 'habit') renderHabitCard();
   if (kind === 'habitEdit') renderHabitSheet();
   if (kind === 'habits') renderHabitsList();
+  if (kind === 'projects') renderProjects();
+  if (kind === 'trash') renderTrash();
 
   const scrim = $('#scrim');
   const sheet = $('#sheet');
 
+  lockBodyScroll();
   scrim.classList.remove('hidden');
   sheet.classList.remove('settled');
+  sheet.style.transform = '';
   requestAnimationFrame(() => {
     scrim.classList.add('open');
     sheet.classList.add('open');
@@ -4084,10 +4180,12 @@ function closeOverlay() {
   // иначе оба изменения схлопнутся в один пересчёт стилей.
   const sheetEl = $('#sheet');
   sheetEl.classList.remove('settled');
+  sheetEl.style.transform = '';
   void sheetEl.offsetHeight;
   sheetEl.classList.remove('open');
   $('#scrim').classList.remove('open');
   setTimeout(() => $('#scrim').classList.add('hidden'), 280);
+  unlockBodyScroll();
 
   // Свернуть лист фокуса можно, не убивая идущую сессию
   if (kind !== 'focus') { state.editingId = null; state.draft = null; }
@@ -4221,6 +4319,16 @@ function renderSheet() {
   dateInput.addEventListener('change', () => {
     if (dateInput.value) { d.deadline = new Date(dateInput.value).getTime(); renderSheet(); }
   });
+  // Если в этот момент ещё активно другое поле (обычно — название задачи
+  // с автофокусом при создании), первое касание дедлайна на iOS Safari
+  // уходит на смену фокуса и опускание клавиатуры, а не на открытие
+  // пикера — тап выглядит так, будто поле не реагирует. Снимаем фокус
+  // заранее, на touchstart, до того как система начнёт обрабатывать
+  // переключение сама.
+  dateInput.addEventListener('touchstart', () => {
+    const active = document.activeElement;
+    if (active && active !== dateInput && typeof active.blur === 'function') active.blur();
+  }, { passive: true });
   // На десктопе клик по полю сам пикер не открывает — нужен showPicker
   dateInput.addEventListener('click', () => {
     if (typeof dateInput.showPicker === 'function') {
@@ -4831,7 +4939,7 @@ function renderSettings() {
   ]));
 
   const about = el('div', 'settings-row');
-  about.appendChild(el('div', 'label', 'Nix · версия 2.1'));
+  about.appendChild(el('div', 'label', 'Nix · версия 2.3'));
   about.appendChild(el('div', 'hint',
     'Свайп вправо — выполнить, влево — в корзину. Тап открывает редактирование, ' +
     'ручка справа меняет порядок, долгое нажатие запускает фокус. ' +
@@ -5455,6 +5563,7 @@ function init() {
   $('#drawer-scrim').addEventListener('click', closeDrawer);
   attachEdgeSwipe();
   $('#scrim').addEventListener('click', closeOverlay);
+  attachSheetDrag($('#sheet'), $('#sheet').querySelector('.grabber'), $('#sheet-inner'), closeOverlay);
 
   const importInput = el('input');
   importInput.type = 'file';
